@@ -2,7 +2,7 @@
 
 import re
 from typing import List, Dict, Tuple
-from jiwer import wer, cer, compute_measures
+from jiwer import wer, cer, process_words
 try:
     from sacrebleu import BLEU
     SACREBLEU_AVAILABLE = True
@@ -139,16 +139,34 @@ def calculate_detailed_wer_metrics(references: List[str], predictions: List[str]
     refs_normalized = [normalize_text(ref) for ref in references]
     preds_normalized = [normalize_text(pred) for pred in predictions]
     
-    # Use jiwer's compute_measures for detailed metrics
-    measures = compute_measures(refs_normalized, preds_normalized)
+    # Calculate WER
+    wer_score = wer(refs_normalized, preds_normalized)
+    
+    # Process words to get detailed alignment information
+    total_substitutions = 0
+    total_insertions = 0
+    total_deletions = 0
+    total_hits = 0
+    
+    for ref, pred in zip(refs_normalized, preds_normalized):
+        # Process words to get detailed metrics
+        output = process_words(ref, pred)
+        
+        # Accumulate metrics from WordOutput
+        total_substitutions += output.substitutions
+        total_insertions += output.insertions
+        total_deletions += output.deletions
+        total_hits += output.hits
+    
+    total_words = total_hits + total_substitutions + total_deletions
     
     return {
-        'wer': measures['wer'],
-        'word_substitutions': measures['substitutions'],
-        'word_insertions': measures['insertions'],
-        'word_deletions': measures['deletions'],
-        'word_hits': measures['hits'],
-        'total_words': measures['hits'] + measures['substitutions'] + measures['deletions']
+        'wer': wer_score,
+        'word_substitutions': total_substitutions,
+        'word_insertions': total_insertions,
+        'word_deletions': total_deletions,
+        'word_hits': total_hits,
+        'total_words': total_words
     }
 
 
