@@ -19,12 +19,55 @@ def load_json_file(json_path: str) -> List[dict]:
         return json.load(f)
 
 
+def find_transcript_for_audio(
+    audio_filename: str,
+    json_files: List[Tuple[str, str]]
+) -> Optional[str]:
+    """Search for transcript matching an audio filename in JSON files.
+    
+    Args:
+        audio_filename: Name of the audio file (e.g., "file.wav")
+        json_files: List of tuples (json_path, field_name) where field_name is either
+                   'recording_file' or 'audio_file_path'
+        
+    Returns:
+        Transcript string if found, None otherwise
+    """
+    # Search through each JSON file
+    for json_path, field_name in json_files:
+        if not os.path.exists(json_path):
+            continue
+        
+        try:
+            records = load_json_file(json_path)
+            
+            for record in records:
+                # Get the audio filename from the JSON record
+                json_audio_field = record.get(field_name)
+                transcript = record.get('transcript', '')
+                
+                if json_audio_field and transcript:
+                    # Normalize filename (handle path separators, get just the basename)
+                    json_audio_filename = os.path.basename(json_audio_field)
+                    
+                    # Match by filename (case-insensitive comparison)
+                    if json_audio_filename.lower() == audio_filename.lower():
+                        return transcript
+        except Exception as e:
+            print(f"Warning: Error reading {json_path}: {e}")
+            continue
+    
+    return None
+
+
 def match_audio_with_transcripts(
     audio_dir: str,
     json_files: List[Tuple[str, str]],
     audio_files_dir: str = "dataset/audio_files"
 ) -> List[Tuple[str, str]]:
     """Match audio files with their transcripts from JSON files.
+    
+    First iterates through audio files, then searches JSON files for matching transcripts.
     
     Args:
         audio_dir: Directory containing audio files
@@ -38,41 +81,34 @@ def match_audio_with_transcripts(
     audio_transcript_pairs = []
     audio_dir_path = Path(audio_dir)
     
-    # Create a mapping from audio filename to transcript
-    transcript_map = {}
-    
-    # Process each JSON file
-    for json_path, field_name in json_files:
-        if not os.path.exists(json_path):
-            print(f"Warning: JSON file not found: {json_path}")
-            continue
-            
-        records = load_json_file(json_path)
-        
-        for record in records:
-            audio_filename = record.get(field_name)
-            transcript = record.get('transcript', '')
-            
-            if audio_filename and transcript:
-                # Normalize filename (handle path separators)
-                audio_filename = os.path.basename(audio_filename)
-                transcript_map[audio_filename] = transcript
-    
-    # Match audio files with transcripts
-    if audio_dir_path.exists():
-        audio_files = list(audio_dir_path.glob("*.wav")) + list(audio_dir_path.glob("*.mp3")) + list(audio_dir_path.glob("*.flac"))
-        
-        for audio_file in audio_files:
-            audio_filename = audio_file.name
-            if audio_filename in transcript_map:
-                transcript = transcript_map[audio_filename]
-                audio_transcript_pairs.append((str(audio_file), transcript))
-            else:
-                print(f"Warning: No transcript found for {audio_filename}")
-    else:
+    # First, get all audio files
+    if not audio_dir_path.exists():
         print(f"Warning: Audio directory not found: {audio_dir}")
+        return audio_transcript_pairs
     
-    print(f"Found {len(audio_transcript_pairs)} audio-transcript pairs")
+    audio_files = (
+        list(audio_dir_path.glob("*.wav")) + 
+        list(audio_dir_path.glob("*.mp3")) + 
+        list(audio_dir_path.glob("*.flac"))
+    )
+    
+    print(f"Found {len(audio_files)} audio files")
+    
+    # For each audio file, search in JSON files for matching transcript
+    matched_count = 0
+    for audio_file in audio_files:
+        audio_filename = audio_file.name
+        
+        # Search for transcript in JSON files
+        transcript = find_transcript_for_audio(audio_filename, json_files)
+        
+        if transcript:
+            audio_transcript_pairs.append((str(audio_file), transcript))
+            matched_count += 1
+        else:
+            print(f"Warning: No transcript found for {audio_filename}")
+    
+    print(f"Matched {matched_count} audio files with transcripts out of {len(audio_files)} total")
     return audio_transcript_pairs
 
 
