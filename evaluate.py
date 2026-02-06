@@ -10,7 +10,7 @@ from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from tqdm import tqdm
 from dotenv import load_dotenv
 
-from src.data_loader import load_dataset, match_audio_with_transcripts
+from src.data_loader import load_dataset, match_audio_with_transcripts, load_test_dataset
 from src.dataset import AudioTranscriptDataset
 from src.evaluator import evaluate_batch, evaluate_samples
 
@@ -214,34 +214,43 @@ def main():
     
     print(f"Loading test set from: {test_dir}")
     
-    # Match test audio files with transcripts from JSON files
+    # Try to load from test.json first (preferred method for test_audio folder)
     test_audio_transcript_pairs = []
     
     if os.path.exists(test_dir):
-        # Match test audio files with transcripts from JSON files
-        json_files = [
-            (os.path.join(config['data']['json_info_dir'], "postgres_laravel_calls.json"), "recording_file"),
-            (os.path.join(config['data']['json_info_dir'], "postgres_public_call_transcripts.json"), "audio_file_path")
-        ]
+        # First, try loading from test.json in the test_audio directory
+        test_audio_transcript_pairs = load_test_dataset(test_dir)
         
-        test_audio_transcript_pairs = match_audio_with_transcripts(
-            test_dir,
-            json_files,
-            config['data']['audio_files_dir']
-        )
+        if len(test_audio_transcript_pairs) > 0:
+            print(f"Loaded {len(test_audio_transcript_pairs)} test samples from test.json")
+        else:
+            # Fall back to matching with main JSON files (for backward compatibility)
+            print("test.json not found or empty, trying to match with main JSON files...")
+            json_files = [
+                (os.path.join(config['data']['json_info_dir'], "postgres_laravel_calls.json"), "recording_file"),
+                (os.path.join(config['data']['json_info_dir'], "postgres_public_call_transcripts.json"), "audio_file_path")
+            ]
+            
+            test_audio_transcript_pairs = match_audio_with_transcripts(
+                test_dir,
+                json_files,
+                config['data']['audio_files_dir']
+            )
+            
+            if len(test_audio_transcript_pairs) > 0:
+                print(f"Loaded {len(test_audio_transcript_pairs)} test samples from main JSON files")
         
         # Test evaluation requires transcripts
         if len(test_audio_transcript_pairs) == 0:
             print(f"Error: No transcripts found for test audio files in {test_dir}")
-            print("Note: Test evaluation requires transcripts. Please ensure test audio files have matching transcripts in JSON files.")
+            print("Note: Test evaluation requires transcripts.")
+            print("Please ensure either:")
+            print("  1. test.json exists in the test_audio folder with 'audio_file_path' and 'transcript' fields, or")
+            print("  2. Test audio files have matching transcripts in the main JSON files.")
             return
     else:
         print(f"Error: Test directory not found: {test_dir}")
         print("Please ensure test audio files are in the test_audio folder.")
-        return
-    
-    if len(test_audio_transcript_pairs) == 0:
-        print("No test samples found!")
         return
     
     print(f"Found {len(test_audio_transcript_pairs)} test samples")

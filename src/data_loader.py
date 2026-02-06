@@ -112,6 +112,85 @@ def match_audio_with_transcripts(
     return audio_transcript_pairs
 
 
+def load_test_dataset(
+    test_audio_dir: str = "dataset/test_audio"
+) -> List[Tuple[str, str]]:
+    """Load test dataset from test.json file in test_audio directory.
+    
+    This function reads transcripts directly from a test.json file located in the
+    test_audio directory. The JSON file should be an array of objects, each with
+    'audio_file_path' and 'transcript' fields.
+    
+    Args:
+        test_audio_dir: Directory containing test audio files and test.json
+        
+    Returns:
+        List of tuples (audio_path, transcript) for matched pairs
+    """
+    audio_transcript_pairs = []
+    test_dir_path = Path(test_audio_dir)
+    
+    # Check if test directory exists
+    if not test_dir_path.exists():
+        print(f"Warning: Test audio directory not found: {test_audio_dir}")
+        return audio_transcript_pairs
+    
+    # Look for test.json in the test_audio directory
+    test_json_path = test_dir_path / "test.json"
+    
+    if not test_json_path.exists():
+        print(f"Warning: test.json not found in {test_audio_dir}")
+        return audio_transcript_pairs
+    
+    # Load test.json file
+    try:
+        test_records = load_json_file(str(test_json_path))
+    except Exception as e:
+        print(f"Error: Failed to load test.json: {e}")
+        return audio_transcript_pairs
+    
+    if not isinstance(test_records, list):
+        print(f"Error: test.json should contain an array of objects")
+        return audio_transcript_pairs
+    
+    # Get all audio files in the directory (case-insensitive search)
+    audio_files = {}
+    for ext in ['*.wav', '*.WAV', '*.mp3', '*.MP3', '*.flac', '*.FLAC']:
+        for audio_file in test_dir_path.glob(ext):
+            # Store with lowercase filename for case-insensitive matching
+            audio_files[audio_file.name.lower()] = audio_file
+    
+    print(f"Found {len(audio_files)} audio files in test directory")
+    
+    # Match audio files with transcripts from test.json
+    matched_count = 0
+    for record in test_records:
+        if not isinstance(record, dict):
+            continue
+        
+        audio_file_path = record.get('audio_file_path')
+        transcript = record.get('transcript', '')
+        
+        if not audio_file_path or not transcript:
+            continue
+        
+        # Get just the filename from the path (handle different path formats)
+        json_audio_filename = os.path.basename(audio_file_path)
+        
+        # Try to find matching audio file (case-insensitive)
+        audio_file_key = json_audio_filename.lower()
+        
+        if audio_file_key in audio_files:
+            audio_file = audio_files[audio_file_key]
+            audio_transcript_pairs.append((str(audio_file), transcript))
+            matched_count += 1
+        else:
+            print(f"Warning: Audio file not found for {json_audio_filename} (from test.json)")
+    
+    print(f"Matched {matched_count} audio files with transcripts from test.json out of {len(test_records)} records")
+    return audio_transcript_pairs
+
+
 def load_dataset(
     audio_files_dir: str = "dataset/audio_files",
     json_info_dir: str = "dataset/info"
