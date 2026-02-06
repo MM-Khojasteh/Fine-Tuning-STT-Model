@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from src.data_loader import load_dataset
 from src.dataset import AudioTranscriptDataset
 from src.trainer import Trainer
+from src.utils import log_gpu_memory
 
 # Load environment variables from .env file
 load_dotenv()
@@ -44,6 +45,7 @@ def setup_device(config: dict) -> torch.device:
     if use_cuda:
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"CUDA Version: {torch.version.cuda}")
+        log_gpu_memory("Initial", device)
     return device
 
 

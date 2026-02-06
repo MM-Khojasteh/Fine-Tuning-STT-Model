@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from src.data_loader import load_dataset, match_audio_with_transcripts, load_test_dataset
 from src.dataset import AudioTranscriptDataset
 from src.evaluator import evaluate_batch, evaluate_samples
+from src.utils import decode_ctc_predictions
 
 # Load environment variables from .env file
 load_dotenv()
@@ -103,9 +104,9 @@ def evaluate_test_set(
             outputs = model(input_values=input_values, attention_mask=attention_mask)
             logits = outputs.logits
             
-            # Decode predictions
+            # Decode predictions with CTC blank token filtering
             predicted_ids = torch.argmax(logits, dim=-1)
-            predictions = processor.batch_decode(predicted_ids)
+            predictions = decode_ctc_predictions(processor, predicted_ids)
             
             # Get references
             references = []

@@ -11,6 +11,10 @@ from typing import Dict, Optional
 from pathlib import Path
 
 from src.evaluator import evaluate_batch
+from src.utils import (
+    decode_ctc_predictions, clear_gpu_cache, log_gpu_memory,
+    inspect_predicted_tokens, check_blank_token_prediction
+)
 
 
 class Trainer:
@@ -69,20 +73,63 @@ class Trainer:
         if isinstance(warmup_steps, str):
             warmup_steps = int(warmup_steps)
         
-        self.scheduler = torch.optim.lr_scheduler.LinearLR(
+        # Warmup scheduler (for initial warmup phase)
+        self.warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             self.optimizer,
             start_factor=0.1,
             total_iters=warmup_steps
         ) if warmup_steps > 0 else None
         
-        # CTC Loss - blank token is typically 0 for Wav2Vec2
-        # Wav2Vec2 uses 0 as the blank/padding token in CTC
+        # ReduceLROnPlateau scheduler (for reducing LR when validation plateaus)
+        use_reduce_lr = config.get('use_reduce_lr_on_plateau', False)
+        if use_reduce_lr:
+            self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode='min',  # Minimize validation WER
+                factor=config.get('reduce_lr_factor', 0.5),
+                patience=config.get('reduce_lr_patience', 2),
+                min_lr=config.get('reduce_lr_min', 1e-6),
+                verbose=True
+            )
+        else:
+            self.lr_scheduler = None
+        
+        # Track warmup steps
+        self.warmup_steps = warmup_steps
+        self.current_step = 0
+        
+        # CTC Loss configuration
+        # Wav2Vec2 typically uses 0 as the blank token, but we check the processor's pad_token_id
+        # For CTC, the blank token should match what the model expects
         blank_token_id = processor.tokenizer.pad_token_id if processor.tokenizer.pad_token_id is not None else 0
+        self.blank_token_id = blank_token_id
+        
+        # CTC Loss with proper configuration:
+        # - blank: token ID for blank/padding (must match processor)
+        # - reduction='mean': average loss over batch
+        # - zero_infinity=True: replace infinite losses with zeros (handles invalid alignments)
         self.criterion = nn.CTCLoss(blank=blank_token_id, reduction='mean', zero_infinity=True)
+        
+        # Verify CTC configuration
+        print(f"\nCTC Loss Configuration:")
+        print(f"  Blank token ID: {blank_token_id}")
+        print(f"  Processor pad_token_id: {processor.tokenizer.pad_token_id}")
+        print(f"  Vocab size: {processor.tokenizer.vocab_size}")
+        print(f"  CTC Loss reduction: mean")
+        print(f"  Zero infinity: True")
         
         # Training state
         self.best_val_wer = float('inf')
         self.training_history = []
+        self.epochs_without_improvement = 0
+        
+        # Mixed precision training
+        self.use_mixed_precision = config.get('device', {}).get('mixed_precision', False)
+        self.scaler = GradScaler() if self.use_mixed_precision and device.type == 'cuda' else None
+        
+        # Early stopping
+        self.early_stopping_patience = config.get('early_stopping_patience', None)
+        self.early_stopping_min_delta = config.get('early_stopping_min_delta', 0.001)
         
         # Create output directory
         self.output_dir = Path(config.get('output_dir', 'outputs'))
@@ -106,6 +153,10 @@ class Trainer:
         skipped_samples = 0
         total_samples = 0
         
+        # Gradient accumulation
+        gradient_accumulation_steps = self.config.get('gradient_accumulation_steps', 1)
+        self.optimizer.zero_grad()
+        
         progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch+1} [Train]")
         
         for batch_idx, batch in enumerate(progress_bar):
@@ -118,9 +169,14 @@ class Trainer:
                 attention_mask = attention_mask.to(self.device)
             labels = batch['labels'].to(self.device)
             
-            # Forward pass
-            outputs = self.model(input_values=input_values, attention_mask=attention_mask)
-            logits = outputs.logits
+            # Forward pass (with mixed precision if enabled)
+            if self.use_mixed_precision and self.scaler is not None:
+                with autocast():
+                    outputs = self.model(input_values=input_values, attention_mask=attention_mask)
+                    logits = outputs.logits
+            else:
+                outputs = self.model(input_values=input_values, attention_mask=attention_mask)
+                logits = outputs.logits
             
             # Calculate CTC loss
             # CTC expects: log_probs (time, batch, vocab), targets (1D), input_lengths, target_lengths
@@ -178,17 +234,33 @@ class Trainer:
                 print(f"Warning: Skipping batch {batch_idx} due to CTC error: {e}")
                 continue
             
-            # Backward pass
-            self.optimizer.zero_grad()
-            loss.backward()
+            # Backward pass (with gradient accumulation and mixed precision)
+            if self.use_mixed_precision and self.scaler is not None:
+                # Scale loss for mixed precision
+                scaled_loss = self.scaler.scale(loss / gradient_accumulation_steps)
+                scaled_loss.backward()
+            else:
+                # Normal backward pass with gradient accumulation
+                (loss / gradient_accumulation_steps).backward()
             
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            
-            self.optimizer.step()
-            
-            if self.scheduler:
-                self.scheduler.step()
+            # Update weights only after accumulating gradients
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                # Gradient clipping
+                if self.use_mixed_precision and self.scaler is not None:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.optimizer.step()
+                
+                self.optimizer.zero_grad()
+                
+                # Update learning rate (warmup scheduler)
+                self.current_step += 1
+                if self.warmup_scheduler and self.current_step <= self.warmup_steps:
+                    self.warmup_scheduler.step()
             
             total_loss += loss.item()
             num_batches += 1
@@ -259,9 +331,19 @@ class Trainer:
                 outputs = self.model(input_values=input_values, attention_mask=attention_mask)
                 logits = outputs.logits
                 
-                # Decode predictions
+                # Decode predictions with CTC blank token filtering
                 predicted_ids = torch.argmax(logits, dim=-1)
-                predictions = self.processor.batch_decode(predicted_ids)
+                
+                # Diagnostic check for blank token prediction (only on first batch of first epoch)
+                if epoch == 0 and len(all_predictions) == 0:
+                    blank_check = check_blank_token_prediction(predicted_ids, blank_token_id=self.processor.tokenizer.pad_token_id or 0)
+                    if blank_check['is_mostly_blanks']:
+                        print(f"\nWARNING: Model is predicting {blank_check['blank_ratio']*100:.1f}% blank tokens!")
+                        print("This may indicate a training issue. Inspecting token predictions...")
+                        token_diagnostics = inspect_predicted_tokens(predicted_ids, self.processor, max_samples=2)
+                        print(f"Token diagnostics: {token_diagnostics['overall']}")
+                
+                predictions = decode_ctc_predictions(self.processor, predicted_ids)
                 
                 # Get references (decode labels)
                 references = []
@@ -280,9 +362,8 @@ class Trainer:
                 # Calculate loss (similar to training)
                 log_probs = nn.functional.log_softmax(logits, dim=-1)
                 
-                # CRITICAL FIX: Use logits.shape[1] (sequence length after feature extraction)
-                # instead of attention_mask length (raw audio length)
-                sequence_length = logits.size(1)  # This is the correct sequence length for CTC
+                # Get input and target lengths for CTC loss (same as training)
+                sequence_length = logits.size(1)  # Sequence length after Wav2Vec2 feature extraction
                 batch_size = logits.size(0)
                 input_lengths = torch.full((batch_size,), sequence_length, dtype=torch.long, device=self.device)
                 
@@ -337,6 +418,11 @@ class Trainer:
         metrics['total_samples'] = total_samples
         metrics['skipped_samples'] = skipped_samples
         
+        # Clear GPU cache after validation if configured
+        if self.config.get('device', {}).get('empty_cache_after_val', False):
+            if self.device.type == 'cuda':
+                clear_gpu_cache(self.device)
+        
         return metrics
     
     def save_checkpoint(self, epoch: int, metrics: Dict[str, float], is_best: bool = False):
@@ -386,10 +472,19 @@ class Trainer:
             # Validate
             val_metrics = self.validate(epoch)
             
+            # Update learning rate scheduler (ReduceLROnPlateau)
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step(val_metrics['wer'])
+            
             # Check if best model
+            wer_improvement = self.best_val_wer - val_metrics['wer']
             is_best = val_metrics['wer'] < self.best_val_wer
-            if is_best:
+            
+            if is_best and wer_improvement >= self.early_stopping_min_delta:
                 self.best_val_wer = val_metrics['wer']
+                self.epochs_without_improvement = 0
+            else:
+                self.epochs_without_improvement += 1
             
             # Save checkpoint
             self.save_checkpoint(epoch, val_metrics, is_best=is_best)
@@ -419,7 +514,18 @@ class Trainer:
             print(f"  Word Errors - Substitutions: {val_metrics['word_substitutions']:.1f}, "
                   f"Insertions: {val_metrics['word_insertions']:.1f}, "
                   f"Deletions: {val_metrics['word_deletions']:.1f}")
+            print(f"  Learning Rate: {self.optimizer.param_groups[0]['lr']:.2e}")
+            if self.epochs_without_improvement > 0:
+                print(f"  Epochs without improvement: {self.epochs_without_improvement}")
             print("-" * 50)
+            
+            # Early stopping check
+            if self.early_stopping_patience is not None:
+                if self.epochs_without_improvement >= self.early_stopping_patience:
+                    print(f"\nEarly stopping triggered after {epoch+1} epochs.")
+                    print(f"No improvement for {self.epochs_without_improvement} epochs.")
+                    print(f"Best validation WER: {self.best_val_wer:.4f}")
+                    break
         
         # Save training history
         history_path = self.output_dir / 'training_history.json'

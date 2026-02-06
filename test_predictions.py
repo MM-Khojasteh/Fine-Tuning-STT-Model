@@ -18,6 +18,7 @@ from src.evaluator import (
     calculate_performance_by_length,
     normalize_text
 )
+from src.utils import decode_ctc_predictions
 
 # Load environment variables from .env file
 load_dotenv()
@@ -112,9 +113,9 @@ def get_predictions_with_details(
             max_probs = torch.max(probs, dim=-1)[0]
             avg_confidence = max_probs.mean(dim=1).cpu().tolist()
             
-            # Decode predictions
+            # Decode predictions with CTC blank token filtering
             predicted_ids = torch.argmax(logits, dim=-1)
-            predictions = processor.batch_decode(predicted_ids)
+            predictions = decode_ctc_predictions(processor, predicted_ids)
             
             # Get references
             references = []

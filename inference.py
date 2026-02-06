@@ -9,7 +9,7 @@ from tqdm import tqdm
 from pathlib import Path
 from dotenv import load_dotenv
 
-from src.utils import format_timestamp
+from src.utils import format_timestamp, decode_ctc_predictions
 
 # Load environment variables from .env file
 load_dotenv()
@@ -148,7 +148,8 @@ def transcribe_audio_file(
             logits = model(input_values).logits
         
         predicted_ids = torch.argmax(logits, dim=-1)
-        transcription = processor.batch_decode(predicted_ids)[0].strip()
+        transcriptions = decode_ctc_predictions(processor, predicted_ids)
+        transcription = transcriptions[0] if transcriptions else ""
         
         # Filter out empty or non-speech transcriptions
         if transcription and transcription.lower() not in ["music", "no speech", ""]:

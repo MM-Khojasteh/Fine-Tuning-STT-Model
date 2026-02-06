@@ -13,22 +13,31 @@ data:
 
 # Training hyperparameters
 training:
-  batch_size: 2
-  num_epochs: 3
+  batch_size: 4  # Increased from 1 for better GPU utilization (adjust if OOM errors occur)
+  num_epochs: 5  # Increased from 2 for better convergence
   learning_rate: 0.0003  # 3e-4
-  weight_decay: 0.005
-  warmup_steps: 200
-  gradient_accumulation_steps: 1
-  max_audio_length: 20.0  # Maximum audio length in seconds (None for no limit)
-  num_workers: 2  # DataLoader workers
+  weight_decay: 0.001
+  warmup_steps: 100
+  gradient_accumulation_steps: 4  # Effectively increases batch size to 16 (4 * 4)
+  max_audio_length: 15.0  # Maximum audio length in seconds (None for no limit)
+  num_workers: 4  # DataLoader workers (increased for better data loading performance)
+  # Learning rate scheduling
+  use_reduce_lr_on_plateau: true  # Reduce LR when validation WER plateaus
+  reduce_lr_patience: 2  # Number of epochs with no improvement before reducing LR
+  reduce_lr_factor: 0.5  # Factor to reduce LR by
+  reduce_lr_min: 1e-6  # Minimum learning rate
+  # Early stopping
+  early_stopping_patience: 3  # Number of epochs with no improvement before stopping
+  early_stopping_min_delta: 0.001  # Minimum change to qualify as improvement
   
 # Output settings
 output:
   output_dir: "outputs"
-  save_every_n_epochs: 2  # Save checkpoint every N epochs
+  save_every_n_epochs: 1  # Save checkpoint every N epochs
   
 # Device settings
 device:
   use_cuda: true  # Automatically use CUDA if available
-  mixed_precision: false  # Use mixed precision training (fp16)
+  mixed_precision: true  # Use mixed precision training (fp16) for faster training and lower memory usage
+  empty_cache_after_val: true  # Clear GPU cache after validation to free memory
 
