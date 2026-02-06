@@ -132,14 +132,26 @@ class AudioTranscriptDataset(Dataset):
         
         # Normalize audio
         waveform = waveform.squeeze(0)
+        original_duration = waveform.shape[0] / self.target_sampling_rate
+        
         if waveform.abs().max() > 0:
             waveform = waveform / waveform.abs().max()
         
         # Truncate if max_audio_length is specified
+        was_truncated = False
         if self.max_audio_length is not None:
             max_samples = int(self.max_audio_length * self.target_sampling_rate)
             if waveform.shape[0] > max_samples:
+                was_truncated = True
                 waveform = waveform[:max_samples]
+        
+        final_duration = waveform.shape[0] / self.target_sampling_rate
+        
+        # Log audio processing info (only for first few samples or when truncation occurs)
+        # This helps verify audio processing is working correctly
+        if idx < 3 or was_truncated:
+            truncation_info = f" (truncated from {original_duration:.2f}s)" if was_truncated else ""
+            print(f"Audio [{idx}]: {final_duration:.2f}s{truncation_info} - {audio_path}")
         
         # Process audio with processor
         processed = self.processor(
