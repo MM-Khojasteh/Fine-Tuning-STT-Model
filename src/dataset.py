@@ -5,8 +5,67 @@ import torchaudio
 import soundfile as sf
 from torch.utils.data import Dataset
 from transformers import Wav2Vec2Processor
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 import re
+
+
+def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
+    """Custom collate function to pad sequences in a batch.
+    
+    Args:
+        batch: List of dictionaries from dataset
+        
+    Returns:
+        Dictionary with padded tensors
+    """
+    # Get max lengths
+    max_input_length = max(item['input_values'].shape[0] for item in batch)
+    max_label_length = max(item['labels'].shape[0] for item in batch)
+    
+    # Get processor pad token id
+    pad_token_id = batch[0].get('pad_token_id', 0)
+    
+    # Initialize lists
+    input_values_list = []
+    attention_mask_list = []
+    labels_list = []
+    
+    for item in batch:
+        input_values = item['input_values']
+        labels = item['labels']
+        attention_mask = item.get('attention_mask')
+        
+        # Pad input_values
+        input_padding = max_input_length - input_values.shape[0]
+        if input_padding > 0:
+            input_values = torch.nn.functional.pad(input_values, (0, input_padding), value=0.0)
+        
+        # Pad attention_mask
+        if attention_mask is not None:
+            attn_padding = max_input_length - attention_mask.shape[0]
+            if attn_padding > 0:
+                attention_mask = torch.nn.functional.pad(attention_mask, (0, attn_padding), value=0)
+        else:
+            # Create attention mask if not provided
+            attention_mask = torch.ones(max_input_length, dtype=torch.long)
+            if input_padding > 0:
+                attention_mask[-input_padding:] = 0
+        
+        # Pad labels (use -100 for padding as it's ignored in loss calculation)
+        label_padding = max_label_length - labels.shape[0]
+        if label_padding > 0:
+            labels = torch.nn.functional.pad(labels, (0, label_padding), value=-100)
+        
+        input_values_list.append(input_values)
+        attention_mask_list.append(attention_mask)
+        labels_list.append(labels)
+    
+    # Stack tensors
+    return {
+        'input_values': torch.stack(input_values_list),
+        'attention_mask': torch.stack(attention_mask_list),
+        'labels': torch.stack(labels_list)
+    }
 
 
 class AudioTranscriptDataset(Dataset):

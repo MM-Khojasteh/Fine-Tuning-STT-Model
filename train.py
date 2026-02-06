@@ -110,13 +110,16 @@ def main():
     print(f"  Test samples: Will be loaded from '{config['data']['test_audio_dir']}' during evaluation")
     print()
     
-    # Create DataLoaders
+    # Create DataLoaders with custom collate function for padding
+    from src.dataset import collate_fn
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=True,
         num_workers=config['training'].get('num_workers', 4),
-        pin_memory=True if device.type == 'cuda' else False
+        pin_memory=True if device.type == 'cuda' else False,
+        collate_fn=collate_fn
     )
     
     val_loader = DataLoader(
@@ -124,7 +127,8 @@ def main():
         batch_size=config['training']['batch_size'],
         shuffle=False,
         num_workers=config['training'].get('num_workers', 4),
-        pin_memory=True if device.type == 'cuda' else False
+        pin_memory=True if device.type == 'cuda' else False,
+        collate_fn=collate_fn
     )
     
     # Create trainer

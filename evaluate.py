@@ -181,7 +181,29 @@ def main():
     
     # Load model
     if not os.path.exists(args.checkpoint):
-        raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
+        print(f"Error: Checkpoint not found: {args.checkpoint}")
+        
+        # Check if outputs directory exists and list available checkpoints
+        outputs_dir = Path("outputs")
+        if outputs_dir.exists():
+            checkpoints_dir = outputs_dir / "checkpoints"
+            if checkpoints_dir.exists():
+                checkpoint_files = list(checkpoints_dir.glob("*.pt"))
+                if checkpoint_files:
+                    print(f"\nAvailable checkpoints in {checkpoints_dir}:")
+                    for cp in sorted(checkpoint_files):
+                        print(f"  - {cp}")
+                    print(f"\nYou can use one of these checkpoints with:")
+                    print(f"  python evaluate.py --checkpoint {checkpoints_dir / checkpoint_files[-1].name}")
+                else:
+                    print(f"\nNo checkpoint files found in {checkpoints_dir}")
+            else:
+                print(f"\nCheckpoints directory not found: {checkpoints_dir}")
+        
+        print(f"\nTo train a model first, run:")
+        print(f"  python train.py")
+        print(f"\nAfter training, the best model will be saved to: outputs/best_model.pt")
+        return
     
     print(f"Loading model from: {args.checkpoint}")
     model, processor, model_config = load_model(args.checkpoint, device)
@@ -232,12 +254,15 @@ def main():
         max_audio_length=config['training'].get('max_audio_length')
     )
     
+    from src.dataset import collate_fn
+    
     test_loader = DataLoader(
         test_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=False,
         num_workers=config['training'].get('num_workers', 4),
-        pin_memory=True if device.type == 'cuda' else False
+        pin_memory=True if device.type == 'cuda' else False,
+        collate_fn=collate_fn
     )
     
     # Evaluate
