@@ -13,19 +13,19 @@ data:
 
 # Training hyperparameters
 training:
-  batch_size: 4
-  num_epochs: 5
+  batch_size: 2
+  num_epochs: 3
   learning_rate: 0.0003  # 3e-4
-  weight_decay: 0.01
-  warmup_steps: 500
+  weight_decay: 0.005
+  warmup_steps: 200
   gradient_accumulation_steps: 1
-  max_audio_length: 30.0  # Maximum audio length in seconds (None for no limit)
-  num_workers: 4  # DataLoader workers
+  max_audio_length: 20.0  # Maximum audio length in seconds (None for no limit)
+  num_workers: 2  # DataLoader workers
   
 # Output settings
 output:
   output_dir: "outputs"
-  save_every_n_epochs: 1  # Save checkpoint every N epochs
+  save_every_n_epochs: 2  # Save checkpoint every N epochs
   
 # Device settings
 device:
