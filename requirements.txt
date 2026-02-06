@@ -1,5 +1,5 @@
-torch>=2.0.0
-torchaudio>=2.0.0
+torch>=2.6.0
+torchaudio>=2.6.0
 transformers>=4.30.0
 jiwer>=3.0.0
 sacrebleu>=2.3.0
@@ -7,4 +7,5 @@ tqdm>=4.65.0
 pyyaml>=6.0
 numpy>=1.24.0
 datasets>=2.14.0
+python-dotenv>=1.0.0
 

@@ -47,7 +47,22 @@ cd Fine-Tuning-STT-Model
 pip install -r requirements.txt
 ```
 
-3. For GPU support, ensure you have CUDA-enabled PyTorch installed. Install from [PyTorch website](https://pytorch.org/) if needed.
+3. Set up environment variables (optional, only needed for private models or gated repositories):
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env and add your Hugging Face token
+# Get your token from: https://huggingface.co/settings/tokens
+# HUGGINGFACE_TOKEN=your_huggingface_token_here
+```
+
+4. **Important**: This project requires PyTorch 2.6.0 or higher due to security requirements. If you have an older version, upgrade with:
+```bash
+pip install --upgrade torch>=2.6.0 torchaudio>=2.6.0
+```
+
+5. For GPU support, ensure you have CUDA-enabled PyTorch installed. Install from [PyTorch website](https://pytorch.org/) if needed.
 
 ## Dataset Format
 
@@ -161,6 +176,13 @@ The evaluation script calculates:
 - Ensure GPU is being used (check device output in training logs)
 - Reduce `num_workers` if data loading is bottleneck
 - Consider freezing feature extractor for faster training (uncomment in `train.py`)
+
+### PyTorch Version Error
+If you encounter an error about `torch.load` requiring PyTorch 2.6.0+, upgrade PyTorch:
+```bash
+pip install --upgrade torch>=2.6.0 torchaudio>=2.6.0
+```
+This is required due to security vulnerabilities in older versions of PyTorch.
 
 ## License
 

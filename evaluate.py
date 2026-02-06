@@ -8,10 +8,14 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from tqdm import tqdm
+from dotenv import load_dotenv
 
 from src.data_loader import load_dataset, match_audio_with_transcripts
 from src.dataset import AudioTranscriptDataset
 from src.evaluator import evaluate_batch, evaluate_samples
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def load_config(config_path: str = "config/config.yaml") -> dict:
@@ -36,8 +40,16 @@ def load_model(checkpoint_path: str, device: torch.device):
     
     model_name = config.get('model', {}).get('name', 'jonatasgrosman/wav2vec2-large-xlsr-53-persian')
     
-    processor = Wav2Vec2Processor.from_pretrained(model_name)
-    model = Wav2Vec2ForCTC.from_pretrained(model_name)
+    # Get Hugging Face token from environment variable (optional)
+    hf_token = os.getenv('HUGGINGFACE_TOKEN')
+    processor = Wav2Vec2Processor.from_pretrained(
+        model_name,
+        token=hf_token if hf_token else None
+    )
+    model = Wav2Vec2ForCTC.from_pretrained(
+        model_name,
+        token=hf_token if hf_token else None
+    )
     
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)

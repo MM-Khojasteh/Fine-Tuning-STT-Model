@@ -6,8 +6,12 @@ import torchaudio
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from tqdm import tqdm
 from pathlib import Path
+from dotenv import load_dotenv
 
 from src.utils import format_timestamp
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def load_model(checkpoint_path: str = None, model_name: str = None, device: torch.device = None):
@@ -28,8 +32,16 @@ def load_model(checkpoint_path: str = None, model_name: str = None, device: torc
         model_name = "jonatasgrosman/wav2vec2-large-xlsr-53-persian"
     
     print(f"Loading model: {model_name}")
-    processor = Wav2Vec2Processor.from_pretrained(model_name)
-    model = Wav2Vec2ForCTC.from_pretrained(model_name)
+    # Get Hugging Face token from environment variable (optional)
+    hf_token = os.getenv('HUGGINGFACE_TOKEN')
+    processor = Wav2Vec2Processor.from_pretrained(
+        model_name,
+        token=hf_token if hf_token else None
+    )
+    model = Wav2Vec2ForCTC.from_pretrained(
+        model_name,
+        token=hf_token if hf_token else None
+    )
     
     # Load fine-tuned checkpoint if provided
     if checkpoint_path and os.path.exists(checkpoint_path):

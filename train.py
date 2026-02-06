@@ -5,10 +5,14 @@ import yaml
 import torch
 from torch.utils.data import DataLoader, random_split
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+from dotenv import load_dotenv
 
 from src.data_loader import load_dataset
 from src.dataset import AudioTranscriptDataset
 from src.trainer import Trainer
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def load_config(config_path: str = "config/config.yaml") -> dict:
@@ -65,8 +69,16 @@ def main():
     
     # Load model and processor
     print(f"Loading model: {config['model']['name']}...")
-    processor = Wav2Vec2Processor.from_pretrained(config['model']['name'])
-    model = Wav2Vec2ForCTC.from_pretrained(config['model']['name'])
+    # Get Hugging Face token from environment variable (optional)
+    hf_token = os.getenv('HUGGINGFACE_TOKEN')
+    processor = Wav2Vec2Processor.from_pretrained(
+        config['model']['name'],
+        token=hf_token if hf_token else None
+    )
+    model = Wav2Vec2ForCTC.from_pretrained(
+        config['model']['name'],
+        token=hf_token if hf_token else None
+    )
     
     # Freeze feature extractor (optional - can be enabled for faster training)
     # model.freeze_feature_extractor()
