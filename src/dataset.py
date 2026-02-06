@@ -2,6 +2,7 @@
 
 import torch
 import torchaudio
+import soundfile as sf
 from torch.utils.data import Dataset
 from transformers import Wav2Vec2Processor
 from typing import List, Tuple, Optional
@@ -46,7 +47,19 @@ class AudioTranscriptDataset(Dataset):
         audio_path, transcript = self.audio_transcript_pairs[idx]
         
         # Load and preprocess audio
-        waveform, sr = torchaudio.load(audio_path)
+        # Use soundfile directly to avoid torchcodec dependency in newer torchaudio
+        try:
+            data, sr = sf.read(audio_path, dtype='float32')
+            # Convert to torch tensor and ensure shape matches torchaudio format: (channels, samples)
+            if data.ndim == 1:
+                # Mono audio: (samples,) -> (1, samples)
+                waveform = torch.from_numpy(data).unsqueeze(0)
+            else:
+                # Multi-channel audio: (samples, channels) -> (channels, samples)
+                waveform = torch.from_numpy(data).transpose(0, 1)
+        except Exception:
+            # Fallback to torchaudio.load if soundfile fails
+            waveform, sr = torchaudio.load(audio_path)
         
         # Convert to mono if stereo
         if waveform.shape[0] > 1:
@@ -80,12 +93,12 @@ class AudioTranscriptDataset(Dataset):
         # Clean and normalize Persian text
         cleaned_transcript = self._clean_text(transcript)
         
-        # Tokenize transcript
-        with self.processor.as_target_processor():
-            labels = self.processor(cleaned_transcript, return_tensors="pt").input_ids
-            # Replace padding token id with -100 (ignored in loss calculation)
-            labels = labels.squeeze(0)
-            labels[labels == self.processor.tokenizer.pad_token_id] = -100
+        # Tokenize transcript using the new API
+        # Use text parameter directly instead of deprecated as_target_processor
+        labels = self.processor(text=cleaned_transcript, return_tensors="pt").input_ids
+        # Replace padding token id with -100 (ignored in loss calculation)
+        labels = labels.squeeze(0)
+        labels[labels == self.processor.tokenizer.pad_token_id] = -100
         
         return {
             "input_values": processed.input_values.squeeze(0),

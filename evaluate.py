@@ -35,7 +35,17 @@ def load_model(checkpoint_path: str, device: torch.device):
     Returns:
         model, processor, config
     """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    except (ValueError, RuntimeError) as e:
+        if "torch.load" in str(e) or "CVE-2025-32434" in str(e):
+            raise RuntimeError(
+                f"Checkpoint loading failed due to PyTorch security restrictions. "
+                f"Please upgrade PyTorch to 2.6.0+ or use safetensors format for checkpoints. "
+                f"Error: {e}"
+            ) from e
+        raise
+    
     config = checkpoint.get('config', {})
     
     model_name = config.get('model', {}).get('name', 'jonatasgrosman/wav2vec2-large-xlsr-53-persian')
@@ -48,7 +58,8 @@ def load_model(checkpoint_path: str, device: torch.device):
     )
     model = Wav2Vec2ForCTC.from_pretrained(
         model_name,
-        token=hf_token if hf_token else None
+        token=hf_token if hf_token else None,
+        use_safetensors=True
     )
     
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -115,6 +126,10 @@ def evaluate_test_set(
     # Calculate per-sample metrics
     per_sample_metrics = evaluate_samples(all_references, all_predictions)
     
+    # Calculate performance by length
+    from src.evaluator import calculate_performance_by_length
+    performance_by_length = calculate_performance_by_length(all_references, all_predictions)
+    
     return {
         'aggregate': aggregate_metrics,
         'per_sample': {
@@ -126,7 +141,8 @@ def evaluate_test_set(
             'word_accuracy': per_sample_metrics['word_accuracy'],
             'character_accuracy': per_sample_metrics['character_accuracy'],
             'exact_match': per_sample_metrics['exact_match']
-        }
+        },
+        'performance_by_length': performance_by_length
     }
 
 
@@ -252,6 +268,21 @@ def main():
     # Quality Scores
     print(f"\nQuality Scores:")
     print(f"  BLEU Score:                     {metrics['bleu']:.2f}")
+    if 'word_f1_score' in metrics:
+        print(f"  Word F1 Score:                  {metrics['word_f1_score']:.4f}")
+    if 'rouge1_f' in metrics and metrics['rouge1_f'] > 0:
+        print(f"  ROUGE-1 F-Score:                {metrics['rouge1_f']:.4f}")
+        print(f"  ROUGE-2 F-Score:                {metrics['rouge2_f']:.4f}")
+        print(f"  ROUGE-L F-Score:                {metrics['rougeL_f']:.4f}")
+    
+    # Error Type Analysis
+    if 'empty_predictions' in metrics:
+        print(f"\nError Type Analysis:")
+        print(f"  Empty Predictions:              {metrics.get('empty_predictions', 0)}")
+        print(f"  Over-predictions (longer):       {metrics.get('over_predictions', 0)} ({metrics.get('over_prediction_rate', 0.0)*100:.1f}%)")
+        print(f"  Under-predictions (shorter):     {metrics.get('under_predictions', 0)} ({metrics.get('under_prediction_rate', 0.0)*100:.1f}%)")
+        print(f"  Exact Length Predictions:        {metrics.get('exact_length_predictions', 0)}")
+        print(f"  Average Length Difference:       {metrics.get('avg_length_difference', 0.0):.2f} words")
     
     # Detailed WER Breakdown
     print(f"\nWord Error Breakdown:")
@@ -268,6 +299,40 @@ def main():
     print(f"  Avg Length Ratio:               {metrics['avg_length_ratio']:.3f}")
     print(f"  Reference Length Range:         {metrics['min_reference_length']:.0f} - {metrics['max_reference_length']:.0f} words")
     print(f"  Prediction Length Range:       {metrics['min_prediction_length']:.0f} - {metrics['max_prediction_length']:.0f} words")
+    
+    # Performance by Length Categories
+    if 'performance_by_length' in results and results['performance_by_length']:
+        print(f"\n{'='*70}")
+        print("PERFORMANCE BY TRANSCRIPT LENGTH")
+        print(f"{'='*70}")
+        for length_range, perf in sorted(results['performance_by_length'].items()):
+            print(f"\n  Length Range: {length_range} words ({perf['count']} samples)")
+            print(f"    WER: {perf['wer']:.4f} | CER: {perf['cer']:.4f}")
+            print(f"    Word Accuracy: {perf['word_accuracy']:.4f} | Character Accuracy: {perf['character_accuracy']:.4f}")
+            print(f"    Exact Match: {perf['exact_match']:.4f}")
+    
+    # Sample Predictions (Best and Worst)
+    if 'per_sample' in results:
+        per_sample = results['per_sample']
+        wer_scores = per_sample['wer']
+        best_indices = sorted(range(len(wer_scores)), key=lambda i: wer_scores[i])[:3]
+        worst_indices = sorted(range(len(wer_scores)), key=lambda i: wer_scores[i], reverse=True)[:3]
+        
+        print(f"\n{'='*70}")
+        print("SAMPLE PREDICTIONS")
+        print(f"{'='*70}")
+        
+        print(f"\nBest Predictions (Lowest WER):")
+        for i, idx in enumerate(best_indices, 1):
+            print(f"\n  Sample {i} (WER: {wer_scores[idx]:.4f}):")
+            print(f"    Reference:  {per_sample['references'][idx]}")
+            print(f"    Prediction: {per_sample['predictions'][idx]}")
+        
+        print(f"\nWorst Predictions (Highest WER):")
+        for i, idx in enumerate(worst_indices, 1):
+            print(f"\n  Sample {i} (WER: {wer_scores[idx]:.4f}):")
+            print(f"    Reference:  {per_sample['references'][idx]}")
+            print(f"    Prediction: {per_sample['predictions'][idx]}")
     
     print(f"\n{'='*70}")
     

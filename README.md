@@ -57,12 +57,22 @@ cp .env.example .env
 # HUGGINGFACE_TOKEN=your_huggingface_token_here
 ```
 
-4. **Important**: This project requires PyTorch 2.6.0 or higher due to security requirements. If you have an older version, upgrade with:
-```bash
-pip install --upgrade torch>=2.6.0 torchaudio>=2.6.0
-```
-
-5. For GPU support, ensure you have CUDA-enabled PyTorch installed. Install from [PyTorch website](https://pytorch.org/) if needed.
+4. **Install PyTorch with CUDA 12.1 support** (recommended for GPU training):
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+   ```
+   
+   Or use the provided installation script:
+   ```powershell
+   .\install_pytorch_cuda.ps1
+   ```
+   
+   **Note**: Currently PyTorch 2.5.1+cu121 is the latest CUDA 12.1 build. Version 2.6.0+ is recommended for security (CVE-2025-32434) but not yet available with CUDA 12.1. When 2.6.0+cu121 becomes available, upgrade to it.
+   
+   **For CPU-only** (slower, but works without GPU and supports 2.6.0+):
+   ```bash
+   pip install --upgrade torch>=2.6.0 torchvision>=0.21.0 torchaudio>=2.6.0
+   ```
 
 ## Dataset Format
 
@@ -119,6 +129,35 @@ Options:
 - `--checkpoint`: Path to model checkpoint (default: `outputs/best_model.pt`)
 - `--test_dir`: Path to test audio directory (overrides config)
 - `--output`: Path to save evaluation results (default: `outputs/evaluation_results.json`)
+
+The evaluation script provides comprehensive metrics including:
+- **Error Rates**: WER (Word Error Rate), CER (Character Error Rate)
+- **Accuracy Metrics**: Word Accuracy, Character Accuracy, Exact Match Accuracy
+- **Quality Scores**: BLEU, ROUGE-1/2/L, Word F1 Score
+- **Error Analysis**: Substitutions, Insertions, Deletions, Length Analysis
+- **Performance by Length**: Metrics grouped by transcript length categories
+- **Sample Predictions**: Best and worst prediction examples
+
+### Comprehensive Prediction Testing
+
+For detailed prediction analysis with confidence scores and extensive reporting:
+
+```bash
+python test_predictions.py --checkpoint outputs/best_model.pt
+```
+
+Options:
+- `--checkpoint`: Path to model checkpoint (default: `outputs/best_model.pt`)
+- `--test_dir`: Path to test audio directory (overrides config)
+- `--output`: Path to save detailed results (default: `outputs/prediction_test_results.json`)
+- `--num_samples`: Number of sample predictions to show (default: all)
+
+This script provides:
+- **Comprehensive Metrics**: All standard metrics plus confidence analysis
+- **Best/Worst Predictions**: Detailed examples of model performance
+- **Confidence Analysis**: Correlation between model confidence and accuracy
+- **Performance Breakdown**: Metrics by transcript length categories
+- **Detailed JSON Output**: Complete results for further analysis
 
 ### Inference
 
@@ -177,12 +216,21 @@ The evaluation script calculates:
 - Reduce `num_workers` if data loading is bottleneck
 - Consider freezing feature extractor for faster training (uncomment in `train.py`)
 
-### PyTorch Version Error
-If you encounter an error about `torch.load` requiring PyTorch 2.6.0+, upgrade PyTorch:
+### PyTorch Version Error (CVE-2025-32434)
+If you encounter an error about `torch.load` requiring PyTorch 2.6.0+, this is due to security vulnerability CVE-2025-32434.
+
+**Primary Solution (Recommended):** The code now uses safetensors format for loading pretrained models, which bypasses this restriction. Ensure `safetensors>=0.4.0` is installed:
+```bash
+pip install safetensors>=0.4.0
+```
+
+**Alternative Solution:** Upgrade PyTorch to 2.6.0+ when available for your CUDA version:
 ```bash
 pip install --upgrade torch>=2.6.0 torchaudio>=2.6.0
 ```
-This is required due to security vulnerabilities in older versions of PyTorch.
+Note: PyTorch 2.6.0+ with CUDA 12.1 support may not be available yet. Check the [PyTorch website](https://pytorch.org/) for the latest CUDA builds.
+
+**Checkpoint Loading:** If you encounter errors when loading saved checkpoints (`.pt` files), you may need to upgrade PyTorch to 2.6.0+ or wait for CUDA 12.1 builds to become available.
 
 ## License
 

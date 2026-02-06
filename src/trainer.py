@@ -43,15 +43,31 @@ class Trainer:
         self.config = config
         
         # Setup optimizer
+        # Ensure learning_rate is a float (YAML may parse scientific notation as string)
+        learning_rate = config.get('learning_rate', 3e-4)
+        if isinstance(learning_rate, str):
+            learning_rate = float(learning_rate)
+        
+        weight_decay = config.get('weight_decay', 0.01)
+        if isinstance(weight_decay, str):
+            weight_decay = float(weight_decay)
+        
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=config.get('learning_rate', 3e-4),
-            weight_decay=config.get('weight_decay', 0.01)
+            lr=learning_rate,
+            weight_decay=weight_decay
         )
         
         # Setup learning rate scheduler
-        num_training_steps = len(train_loader) * config.get('num_epochs', 3)
+        # Ensure numeric values are proper types
+        num_epochs = config.get('num_epochs', 3)
+        if isinstance(num_epochs, str):
+            num_epochs = int(num_epochs)
+        num_training_steps = len(train_loader) * num_epochs
+        
         warmup_steps = config.get('warmup_steps', 500)
+        if isinstance(warmup_steps, str):
+            warmup_steps = int(warmup_steps)
         
         self.scheduler = torch.optim.lr_scheduler.LinearLR(
             self.optimizer,
@@ -288,6 +304,8 @@ class Trainer:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         
         # Save regular checkpoint
+        # Note: Checkpoints are saved using torch.save() which may have security restrictions
+        # with PyTorch < 2.6.0. When loading, ensure PyTorch >= 2.6.0 or handle the error appropriately.
         checkpoint_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch+1}.pt'
         torch.save(checkpoint, checkpoint_path)
         

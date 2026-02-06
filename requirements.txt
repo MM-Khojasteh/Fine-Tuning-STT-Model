@@ -1,11 +1,21 @@
-torch>=2.6.0
-torchaudio>=2.6.0
+# PyTorch with CUDA 12.1 support
+# Install with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Note: Currently 2.5.1+cu121 is the latest CUDA 12.1 build. 
+# Version 2.6.0+ is recommended for security (CVE-2025-32434) but not yet available with CUDA 12.1.
+# When 2.6.0+cu121 becomes available, upgrade to it.
+# Workaround: Using safetensors format for model loading (use_safetensors=True) bypasses the torch.load restriction.
+torch>=2.5.1
+torchvision>=0.20.1
+torchaudio>=2.5.1
 transformers>=4.30.0
+safetensors>=0.4.0
 jiwer>=3.0.0
 sacrebleu>=2.3.0
+rouge-score>=0.1.2
 tqdm>=4.65.0
 pyyaml>=6.0
 numpy>=1.24.0
 datasets>=2.14.0
 python-dotenv>=1.0.0
+soundfile>=0.12.0
 

@@ -77,7 +77,8 @@ def main():
     )
     model = Wav2Vec2ForCTC.from_pretrained(
         config['model']['name'],
-        token=hf_token if hf_token else None
+        token=hf_token if hf_token else None,
+        use_safetensors=True
     )
     
     # Freeze feature extractor (optional - can be enabled for faster training)

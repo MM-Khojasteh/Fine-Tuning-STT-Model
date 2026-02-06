@@ -3,6 +3,7 @@
 import os
 import torch
 import torchaudio
+import soundfile as sf
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from tqdm import tqdm
 from pathlib import Path
@@ -40,15 +41,25 @@ def load_model(checkpoint_path: str = None, model_name: str = None, device: torc
     )
     model = Wav2Vec2ForCTC.from_pretrained(
         model_name,
-        token=hf_token if hf_token else None
+        token=hf_token if hf_token else None,
+        use_safetensors=True
     )
     
     # Load fine-tuned checkpoint if provided
     if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"Loading fine-tuned checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print("Fine-tuned model loaded successfully!")
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print("Fine-tuned model loaded successfully!")
+        except (ValueError, RuntimeError) as e:
+            if "torch.load" in str(e) or "CVE-2025-32434" in str(e):
+                raise RuntimeError(
+                    f"Checkpoint loading failed due to PyTorch security restrictions. "
+                    f"Please upgrade PyTorch to 2.6.0+ or use safetensors format for checkpoints. "
+                    f"Error: {e}"
+                ) from e
+            raise
     else:
         print("Using pretrained model (no fine-tuning)")
     
@@ -80,7 +91,19 @@ def transcribe_audio_file(
         List of dictionaries with timestamped transcriptions
     """
     # Load audio
-    waveform, sr = torchaudio.load(file_path)
+    # Use soundfile directly to avoid torchcodec dependency in newer torchaudio
+    try:
+        data, sr = sf.read(file_path, dtype='float32')
+        # Convert to torch tensor and ensure shape matches torchaudio format: (channels, samples)
+        if data.ndim == 1:
+            # Mono audio: (samples,) -> (1, samples)
+            waveform = torch.from_numpy(data).unsqueeze(0)
+        else:
+            # Multi-channel audio: (samples, channels) -> (channels, samples)
+            waveform = torch.from_numpy(data).transpose(0, 1)
+    except Exception:
+        # Fallback to torchaudio.load if soundfile fails
+        waveform, sr = torchaudio.load(file_path)
     
     # Convert to mono if stereo
     if waveform.shape[0] > 1:
