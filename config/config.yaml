@@ -1,0 +1,34 @@
+# Wav2Vec2 Fine-tuning Configuration
+
+# Model settings
+model:
+  name: "jonatasgrosman/wav2vec2-large-xlsr-53-persian"
+  
+# Data paths
+data:
+  audio_files_dir: "dataset/audio_files"
+  json_info_dir: "dataset/info"
+  test_audio_dir: "dataset/test_audio"
+  train_val_split: 0.8  # 80% train, 20% validation
+
+# Training hyperparameters
+training:
+  batch_size: 4
+  num_epochs: 5
+  learning_rate: 3e-4
+  weight_decay: 0.01
+  warmup_steps: 500
+  gradient_accumulation_steps: 1
+  max_audio_length: 30.0  # Maximum audio length in seconds (None for no limit)
+  num_workers: 4  # DataLoader workers
+  
+# Output settings
+output:
+  output_dir: "outputs"
+  save_every_n_epochs: 1  # Save checkpoint every N epochs
+  
+# Device settings
+device:
+  use_cuda: true  # Automatically use CUDA if available
+  mixed_precision: false  # Use mixed precision training (fp16)
+
