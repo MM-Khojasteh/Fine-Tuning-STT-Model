@@ -333,9 +333,13 @@ class Trainer:
             print(f"\nEpoch {epoch+1}/{num_epochs}")
             print(f"Train Loss: {train_metrics['loss']:.4f}")
             print(f"Val Loss: {val_metrics['loss']:.4f}")
-            print(f"Val WER: {val_metrics['wer']:.4f}")
-            print(f"Val CER: {val_metrics['cer']:.4f}")
-            print(f"Val BLEU: {val_metrics['bleu']:.2f}")
+            print(f"\nValidation Metrics:")
+            print(f"  WER: {val_metrics['wer']:.4f} | CER: {val_metrics['cer']:.4f}")
+            print(f"  Word Accuracy: {val_metrics['word_accuracy']:.4f} | Character Accuracy: {val_metrics['character_accuracy']:.4f}")
+            print(f"  Exact Match: {val_metrics['exact_match_accuracy']:.4f} | BLEU: {val_metrics['bleu']:.2f}")
+            print(f"  Word Errors - Substitutions: {val_metrics['word_substitutions']:.1f}, "
+                  f"Insertions: {val_metrics['word_insertions']:.1f}, "
+                  f"Deletions: {val_metrics['word_deletions']:.1f}")
             print("-" * 50)
         
         # Save training history

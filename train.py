@@ -79,7 +79,8 @@ def main():
         max_audio_length=config['training'].get('max_audio_length')
     )
     
-    # Split into train and validation
+    # Split into train and validation (80/20 split)
+    # Note: Test set is separate and loaded from test_audio folder during evaluation
     train_val_split = config['data']['train_val_split']
     train_size = int(train_val_split * len(dataset))
     val_size = len(dataset) - train_size
@@ -90,8 +91,11 @@ def main():
         generator=torch.Generator().manual_seed(42)  # For reproducibility
     )
     
-    print(f"Train samples: {len(train_dataset)}")
-    print(f"Validation samples: {len(val_dataset)}")
+    print(f"\nDataset Split:")
+    print(f"  Train samples: {len(train_dataset)} ({len(train_dataset)/len(dataset)*100:.1f}%)")
+    print(f"  Validation samples: {len(val_dataset)} ({len(val_dataset)/len(dataset)*100:.1f}%)")
+    print(f"  Test samples: Will be loaded from '{config['data']['test_audio_dir']}' during evaluation")
+    print()
     
     # Create DataLoaders
     train_loader = DataLoader(

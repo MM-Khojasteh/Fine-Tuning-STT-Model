@@ -110,7 +110,10 @@ def evaluate_test_set(
             'predictions': all_predictions,
             'wer': per_sample_metrics['wer'],
             'cer': per_sample_metrics['cer'],
-            'bleu': per_sample_metrics['bleu']
+            'bleu': per_sample_metrics['bleu'],
+            'word_accuracy': per_sample_metrics['word_accuracy'],
+            'character_accuracy': per_sample_metrics['character_accuracy'],
+            'exact_match': per_sample_metrics['exact_match']
         }
     }
 
@@ -155,15 +158,17 @@ def main():
     print(f"Loading model from: {args.checkpoint}")
     model, processor, model_config = load_model(args.checkpoint, device)
     
-    # Load test dataset
+    # Load test dataset from test_audio folder
+    # Note: Test set is separate from train/validation split
     test_dir = args.test_dir or config['data']['test_audio_dir']
     
-    # Try to match test audio files with transcripts
-    # First, try to find transcripts in the JSON files
+    print(f"Loading test set from: {test_dir}")
+    
+    # Match test audio files with transcripts from JSON files
     test_audio_transcript_pairs = []
     
     if os.path.exists(test_dir):
-        # Try to match with transcripts from JSON files
+        # Match test audio files with transcripts from JSON files
         json_files = [
             (os.path.join(config['data']['json_info_dir'], "postgres_laravel_calls.json"), "recording_file"),
             (os.path.join(config['data']['json_info_dir'], "postgres_public_call_transcripts.json"), "audio_file_path")
@@ -175,15 +180,14 @@ def main():
             config['data']['audio_files_dir']
         )
         
-        # If no transcripts found, create dataset with empty transcripts (for inference-only evaluation)
+        # Test evaluation requires transcripts
         if len(test_audio_transcript_pairs) == 0:
-            print(f"Warning: No transcripts found for test audio files in {test_dir}")
-            print("Creating test dataset without transcripts (inference-only mode)...")
-            test_audio_files = list(Path(test_dir).glob("*.wav")) + list(Path(test_dir).glob("*.mp3")) + list(Path(test_dir).glob("*.flac"))
-            test_audio_transcript_pairs = [(str(f), "") for f in test_audio_files]
+            print(f"Error: No transcripts found for test audio files in {test_dir}")
+            print("Note: Test evaluation requires transcripts. Please ensure test audio files have matching transcripts in JSON files.")
+            return
     else:
-        print(f"Warning: Test directory not found: {test_dir}")
-        print("Skipping test evaluation.")
+        print(f"Error: Test directory not found: {test_dir}")
+        print("Please ensure test audio files are in the test_audio folder.")
         return
     
     if len(test_audio_transcript_pairs) == 0:
@@ -212,15 +216,48 @@ def main():
     results = evaluate_test_set(model, processor, test_loader, device)
     
     # Print results
-    print("\n" + "="*50)
-    print("EVALUATION RESULTS")
-    print("="*50)
+    print("\n" + "="*70)
+    print("TEST SET EVALUATION RESULTS")
+    print("="*70)
     print(f"Test Samples: {len(test_audio_transcript_pairs)}")
-    print(f"\nAggregate Metrics:")
-    print(f"  WER: {results['aggregate']['wer']:.4f}")
-    print(f"  CER: {results['aggregate']['cer']:.4f}")
-    print(f"  BLEU: {results['aggregate']['bleu']:.2f}")
-    print("="*50)
+    print(f"\n{'='*70}")
+    print("AGGREGATE METRICS")
+    print(f"{'='*70}")
+    
+    metrics = results['aggregate']
+    
+    # Error Rates (lower is better)
+    print(f"\nError Rates:")
+    print(f"  Word Error Rate (WER):        {metrics['wer']:.4f} ({metrics['wer']*100:.2f}%)")
+    print(f"  Character Error Rate (CER):    {metrics['cer']:.4f} ({metrics['cer']*100:.2f}%)")
+    
+    # Accuracy Metrics (higher is better)
+    print(f"\nAccuracy Metrics:")
+    print(f"  Word Accuracy:                  {metrics['word_accuracy']:.4f} ({metrics['word_accuracy']*100:.2f}%)")
+    print(f"  Character Accuracy:             {metrics['character_accuracy']:.4f} ({metrics['character_accuracy']*100:.2f}%)")
+    print(f"  Exact Match Accuracy:           {metrics['exact_match_accuracy']:.4f} ({metrics['exact_match_accuracy']*100:.2f}%)")
+    
+    # Quality Scores
+    print(f"\nQuality Scores:")
+    print(f"  BLEU Score:                     {metrics['bleu']:.2f}")
+    
+    # Detailed WER Breakdown
+    print(f"\nWord Error Breakdown:")
+    print(f"  Total Words:                    {metrics['total_words']:.0f}")
+    print(f"  Correct Words (Hits):           {metrics['word_hits']:.0f}")
+    print(f"  Substitutions:                  {metrics['word_substitutions']:.0f}")
+    print(f"  Insertions:                     {metrics['word_insertions']:.0f}")
+    print(f"  Deletions:                      {metrics['word_deletions']:.0f}")
+    
+    # Length Statistics
+    print(f"\nLength Statistics:")
+    print(f"  Avg Reference Length:          {metrics['avg_reference_length']:.2f} words")
+    print(f"  Avg Prediction Length:          {metrics['avg_prediction_length']:.2f} words")
+    print(f"  Avg Length Ratio:               {metrics['avg_length_ratio']:.3f}")
+    print(f"  Reference Length Range:         {metrics['min_reference_length']:.0f} - {metrics['max_reference_length']:.0f} words")
+    print(f"  Prediction Length Range:       {metrics['min_prediction_length']:.0f} - {metrics['max_prediction_length']:.0f} words")
+    
+    print(f"\n{'='*70}")
     
     # Save results
     output_path = Path(args.output)
