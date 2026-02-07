@@ -65,12 +65,8 @@ def decode_ctc_predictions(
                 text = processor.decode(filtered)
                 decoded_texts.append(text.strip())
             except Exception as e:
-                # Fallback: try decoding the whole sequence
-                try:
-                    text = processor.decode(filtered)
-                    decoded_texts.append(text.strip() if text else "")
-                except:
-                    decoded_texts.append("")
+                # If decoding fails, return empty string
+                decoded_texts.append("")
         else:
             decoded_texts.append("")
     

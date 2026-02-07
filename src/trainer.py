@@ -83,12 +83,25 @@ class Trainer:
         # ReduceLROnPlateau scheduler (for reducing LR when validation plateaus)
         use_reduce_lr = config.get('use_reduce_lr_on_plateau', False)
         if use_reduce_lr:
+            # Ensure numeric values are proper types (YAML may parse scientific notation as string)
+            reduce_lr_factor = config.get('reduce_lr_factor', 0.5)
+            if isinstance(reduce_lr_factor, str):
+                reduce_lr_factor = float(reduce_lr_factor)
+            
+            reduce_lr_patience = config.get('reduce_lr_patience', 2)
+            if isinstance(reduce_lr_patience, str):
+                reduce_lr_patience = int(reduce_lr_patience)
+            
+            reduce_lr_min = config.get('reduce_lr_min', 1e-6)
+            if isinstance(reduce_lr_min, str):
+                reduce_lr_min = float(reduce_lr_min)
+            
             self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer,
                 mode='min',  # Minimize validation WER
-                factor=config.get('reduce_lr_factor', 0.5),
-                patience=config.get('reduce_lr_patience', 2),
-                min_lr=config.get('reduce_lr_min', 1e-6),
+                factor=reduce_lr_factor,
+                patience=reduce_lr_patience,
+                min_lr=reduce_lr_min,
                 verbose=True
             )
         else:
@@ -175,8 +188,8 @@ class Trainer:
                     outputs = self.model(input_values=input_values, attention_mask=attention_mask)
                     logits = outputs.logits
             else:
-                outputs = self.model(input_values=input_values, attention_mask=attention_mask)
-                logits = outputs.logits
+            outputs = self.model(input_values=input_values, attention_mask=attention_mask)
+            logits = outputs.logits
             
             # Calculate CTC loss
             # CTC expects: log_probs (time, batch, vocab), targets (1D), input_lengths, target_lengths
@@ -245,16 +258,16 @@ class Trainer:
             
             # Update weights only after accumulating gradients
             if (batch_idx + 1) % gradient_accumulation_steps == 0:
-                # Gradient clipping
+            # Gradient clipping
                 if self.use_mixed_precision and self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    self.optimizer.step()
-                
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            self.optimizer.step()
+            
                 self.optimizer.zero_grad()
                 
                 # Update learning rate (warmup scheduler)
@@ -441,8 +454,16 @@ class Trainer:
             'config': self.config
         }
         
-        if self.scheduler:
-            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+        # Save scheduler state dicts if they exist
+        if self.warmup_scheduler:
+            checkpoint['warmup_scheduler_state_dict'] = self.warmup_scheduler.state_dict()
+        if self.lr_scheduler:
+            # ReduceLROnPlateau doesn't have state_dict, but we can save its state
+            checkpoint['lr_scheduler_state'] = {
+                'best': self.lr_scheduler.best,
+                'num_bad_epochs': self.lr_scheduler.num_bad_epochs,
+                'last_epoch': self.lr_scheduler.last_epoch
+            }
         
         # Save regular checkpoint
         # Note: Checkpoints are saved using torch.save() which may have security restrictions
@@ -480,9 +501,15 @@ class Trainer:
             wer_improvement = self.best_val_wer - val_metrics['wer']
             is_best = val_metrics['wer'] < self.best_val_wer
             
-            if is_best and wer_improvement >= self.early_stopping_min_delta:
+            # Always update best_val_wer if this is the best model so far
+            if is_best:
                 self.best_val_wer = val_metrics['wer']
-                self.epochs_without_improvement = 0
+                # Only reset early stopping counter if improvement is significant
+                if wer_improvement >= self.early_stopping_min_delta:
+                    self.epochs_without_improvement = 0
+                else:
+                    # Still count as no improvement for early stopping (improvement too small)
+                    self.epochs_without_improvement += 1
             else:
                 self.epochs_without_improvement += 1
             
@@ -496,6 +523,15 @@ class Trainer:
                 'validation': val_metrics
             }
             self.training_history.append(epoch_log)
+            
+            # Save training history after each epoch (in case of interruption)
+            try:
+                history_path = self.output_dir / 'training_history.json'
+                with open(history_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.training_history, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                # Don't fail training if history save fails
+                pass
             
             # Print summary
             print(f"\nEpoch {epoch+1}/{num_epochs}")
@@ -527,10 +563,14 @@ class Trainer:
                     print(f"Best validation WER: {self.best_val_wer:.4f}")
                     break
         
-        # Save training history
-        history_path = self.output_dir / 'training_history.json'
-        with open(history_path, 'w', encoding='utf-8') as f:
-            json.dump(self.training_history, f, indent=2, ensure_ascii=False)
+        # Save training history (always save, even if training was interrupted)
+        try:
+            history_path = self.output_dir / 'training_history.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                json.dump(self.training_history, f, indent=2, ensure_ascii=False)
+            print(f"\nTraining history saved to: {history_path}")
+        except Exception as e:
+            print(f"\nWarning: Failed to save training history: {e}")
         
         print(f"\nTraining completed! Best validation WER: {self.best_val_wer:.4f}")
         print(f"Model saved to: {self.output_dir}")
