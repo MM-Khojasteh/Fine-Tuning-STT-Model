@@ -4,6 +4,7 @@ import os
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.cuda.amp import GradScaler, autocast
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from tqdm import tqdm
 import json
@@ -15,6 +16,9 @@ from src.utils import (
     decode_ctc_predictions, clear_gpu_cache, log_gpu_memory,
     inspect_predicted_tokens, check_blank_token_prediction
 )
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class Trainer:
@@ -47,55 +51,35 @@ class Trainer:
         self.config = config
         
         # Setup optimizer
-        # Ensure learning_rate is a float (YAML may parse scientific notation as string)
         learning_rate = config.get('learning_rate', 3e-4)
-        if isinstance(learning_rate, str):
-            learning_rate = float(learning_rate)
-        
         weight_decay = config.get('weight_decay', 0.01)
-        if isinstance(weight_decay, str):
-            weight_decay = float(weight_decay)
-        
+
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=learning_rate,
             weight_decay=weight_decay
         )
-        
+
         # Setup learning rate scheduler
-        # Ensure numeric values are proper types
         num_epochs = config.get('num_epochs', 3)
-        if isinstance(num_epochs, str):
-            num_epochs = int(num_epochs)
         num_training_steps = len(train_loader) * num_epochs
-        
+
         warmup_steps = config.get('warmup_steps', 500)
-        if isinstance(warmup_steps, str):
-            warmup_steps = int(warmup_steps)
-        
+
         # Warmup scheduler (for initial warmup phase)
         self.warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             self.optimizer,
             start_factor=0.1,
             total_iters=warmup_steps
         ) if warmup_steps > 0 else None
-        
+
         # ReduceLROnPlateau scheduler (for reducing LR when validation plateaus)
         use_reduce_lr = config.get('use_reduce_lr_on_plateau', False)
         if use_reduce_lr:
-            # Ensure numeric values are proper types (YAML may parse scientific notation as string)
             reduce_lr_factor = config.get('reduce_lr_factor', 0.5)
-            if isinstance(reduce_lr_factor, str):
-                reduce_lr_factor = float(reduce_lr_factor)
-            
             reduce_lr_patience = config.get('reduce_lr_patience', 2)
-            if isinstance(reduce_lr_patience, str):
-                reduce_lr_patience = int(reduce_lr_patience)
-            
             reduce_lr_min = config.get('reduce_lr_min', 1e-6)
-            if isinstance(reduce_lr_min, str):
-                reduce_lr_min = float(reduce_lr_min)
-            
+
             self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer,
                 mode='min',  # Minimize validation WER
@@ -124,12 +108,12 @@ class Trainer:
         self.criterion = nn.CTCLoss(blank=blank_token_id, reduction='mean', zero_infinity=True)
         
         # Verify CTC configuration
-        print(f"\nCTC Loss Configuration:")
-        print(f"  Blank token ID: {blank_token_id}")
-        print(f"  Processor pad_token_id: {processor.tokenizer.pad_token_id}")
-        print(f"  Vocab size: {processor.tokenizer.vocab_size}")
-        print(f"  CTC Loss reduction: mean")
-        print(f"  Zero infinity: True")
+        logger.info("CTC Loss Configuration:")
+        logger.info(f"  Blank token ID: {blank_token_id}")
+        logger.info(f"  Processor pad_token_id: {processor.tokenizer.pad_token_id}")
+        logger.info(f"  Vocab size: {processor.tokenizer.vocab_size}")
+        logger.info("  CTC Loss reduction: mean")
+        logger.info("  Zero infinity: True")
         
         # Training state
         self.best_val_wer = float('inf')
@@ -143,6 +127,9 @@ class Trainer:
         # Early stopping
         self.early_stopping_patience = config.get('early_stopping_patience', None)
         self.early_stopping_min_delta = config.get('early_stopping_min_delta', 0.001)
+
+        # Gradient clipping
+        self.gradient_clip_norm = config.get('gradient_clip_norm', 1.0)
         
         # Create output directory
         self.output_dir = Path(config.get('output_dir', 'outputs'))
@@ -188,8 +175,8 @@ class Trainer:
                     outputs = self.model(input_values=input_values, attention_mask=attention_mask)
                     logits = outputs.logits
             else:
-            outputs = self.model(input_values=input_values, attention_mask=attention_mask)
-            logits = outputs.logits
+                outputs = self.model(input_values=input_values, attention_mask=attention_mask)
+                logits = outputs.logits
             
             # Calculate CTC loss
             # CTC expects: log_probs (time, batch, vocab), targets (1D), input_lengths, target_lengths
@@ -244,7 +231,7 @@ class Trainer:
             except RuntimeError as e:
                 # Skip batch if CTC loss calculation fails
                 skipped_batches += 1
-                print(f"Warning: Skipping batch {batch_idx} due to CTC error: {e}")
+                logger.warning(f"Skipping batch {batch_idx} due to CTC error: {e}")
                 continue
             
             # Backward pass (with gradient accumulation and mixed precision)
@@ -258,18 +245,18 @@ class Trainer:
             
             # Update weights only after accumulating gradients
             if (batch_idx + 1) % gradient_accumulation_steps == 0:
-            # Gradient clipping
+                # Gradient clipping
                 if self.use_mixed_precision and self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.gradient_clip_norm)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
-            
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.gradient_clip_norm)
+                    self.optimizer.step()
+
                 self.optimizer.zero_grad()
-                
+
                 # Update learning rate (warmup scheduler)
                 self.current_step += 1
                 if self.warmup_scheduler and self.current_step <= self.warmup_steps:
@@ -287,18 +274,18 @@ class Trainer:
             })
         
         avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
-        
+
         # Report batch processing statistics
         processed_batches = len(self.train_loader) - skipped_batches
         skip_rate = (skipped_batches / len(self.train_loader) * 100) if len(self.train_loader) > 0 else 0.0
-        
+
         if skipped_batches > 0:
-            print(f"\nTraining Statistics - Processed: {processed_batches}/{len(self.train_loader)} batches "
-                  f"({skip_rate:.1f}% skipped), Samples: {total_samples - skipped_samples}/{total_samples} "
-                  f"({skipped_samples} filtered)")
-        
+            logger.info(f"Training Statistics - Processed: {processed_batches}/{len(self.train_loader)} batches "
+                       f"({skip_rate:.1f}% skipped), Samples: {total_samples - skipped_samples}/{total_samples} "
+                       f"({skipped_samples} filtered)")
+
         if skip_rate > 50.0:
-            print(f"WARNING: More than 50% of batches were skipped! This may indicate data issues.")
+            logger.warning(f"More than 50% of batches were skipped! This may indicate data issues.")
         
         return {
             'loss': avg_loss,
@@ -351,10 +338,10 @@ class Trainer:
                 if epoch == 0 and len(all_predictions) == 0:
                     blank_check = check_blank_token_prediction(predicted_ids, blank_token_id=self.processor.tokenizer.pad_token_id or 0)
                     if blank_check['is_mostly_blanks']:
-                        print(f"\nWARNING: Model is predicting {blank_check['blank_ratio']*100:.1f}% blank tokens!")
-                        print("This may indicate a training issue. Inspecting token predictions...")
+                        logger.warning(f"Model is predicting {blank_check['blank_ratio']*100:.1f}% blank tokens!")
+                        logger.warning("This may indicate a training issue. Inspecting token predictions...")
                         token_diagnostics = inspect_predicted_tokens(predicted_ids, self.processor, max_samples=2)
-                        print(f"Token diagnostics: {token_diagnostics['overall']}")
+                        logger.warning(f"Token diagnostics: {token_diagnostics['overall']}")
                 
                 predictions = decode_ctc_predictions(self.processor, predicted_ids)
                 
@@ -475,16 +462,16 @@ class Trainer:
         if is_best:
             best_path = self.output_dir / 'best_model.pt'
             torch.save(checkpoint, best_path)
-            print(f"Saved best model with WER: {metrics['wer']:.4f}")
-    
+            logger.info(f"Saved best model with WER: {metrics['wer']:.4f}")
+
     def train(self):
         """Run full training loop."""
         num_epochs = self.config.get('num_epochs', 3)
-        
-        print(f"Starting training for {num_epochs} epochs...")
-        print(f"Device: {self.device}")
-        print(f"Training samples: {len(self.train_loader.dataset)}")
-        print(f"Validation samples: {len(self.val_loader.dataset)}")
+
+        logger.info(f"Starting training for {num_epochs} epochs...")
+        logger.info(f"Device: {self.device}")
+        logger.info(f"Training samples: {len(self.train_loader.dataset)}")
+        logger.info(f"Validation samples: {len(self.val_loader.dataset)}")
         
         for epoch in range(num_epochs):
             # Train
@@ -533,45 +520,45 @@ class Trainer:
                 # Don't fail training if history save fails
                 pass
             
-            # Print summary
-            print(f"\nEpoch {epoch+1}/{num_epochs}")
-            print(f"Train Loss: {train_metrics['loss']:.4f}")
+            # Log summary
+            logger.info(f"Epoch {epoch+1}/{num_epochs}")
+            logger.info(f"Train Loss: {train_metrics['loss']:.4f}")
             if 'skip_rate' in train_metrics and train_metrics['skip_rate'] > 0:
-                print(f"  (Processed {train_metrics['processed_batches']}/{len(self.train_loader)} batches, "
-                      f"{train_metrics['skip_rate']:.1f}% skipped)")
-            print(f"Val Loss: {val_metrics['loss']:.4f}")
+                logger.info(f"  (Processed {train_metrics['processed_batches']}/{len(self.train_loader)} batches, "
+                           f"{train_metrics['skip_rate']:.1f}% skipped)")
+            logger.info(f"Val Loss: {val_metrics['loss']:.4f}")
             if 'skip_rate' in val_metrics and val_metrics['skip_rate'] > 0:
-                print(f"  (Processed {val_metrics['processed_batches']}/{len(self.val_loader)} batches, "
-                      f"{val_metrics['skip_rate']:.1f}% skipped)")
-            print(f"\nValidation Metrics:")
-            print(f"  WER: {val_metrics['wer']:.4f} | CER: {val_metrics['cer']:.4f}")
-            print(f"  Word Accuracy: {val_metrics['word_accuracy']:.4f} | Character Accuracy: {val_metrics['character_accuracy']:.4f}")
-            print(f"  Exact Match: {val_metrics['exact_match_accuracy']:.4f} | BLEU: {val_metrics['bleu']:.2f}")
-            print(f"  Word Errors - Substitutions: {val_metrics['word_substitutions']:.1f}, "
-                  f"Insertions: {val_metrics['word_insertions']:.1f}, "
-                  f"Deletions: {val_metrics['word_deletions']:.1f}")
-            print(f"  Learning Rate: {self.optimizer.param_groups[0]['lr']:.2e}")
+                logger.info(f"  (Processed {val_metrics['processed_batches']}/{len(self.val_loader)} batches, "
+                           f"{val_metrics['skip_rate']:.1f}% skipped)")
+            logger.info("Validation Metrics:")
+            logger.info(f"  WER: {val_metrics['wer']:.4f} | CER: {val_metrics['cer']:.4f}")
+            logger.info(f"  Word Accuracy: {val_metrics['word_accuracy']:.4f} | Character Accuracy: {val_metrics['character_accuracy']:.4f}")
+            logger.info(f"  Exact Match: {val_metrics['exact_match_accuracy']:.4f} | BLEU: {val_metrics['bleu']:.2f}")
+            logger.info(f"  Word Errors - Substitutions: {val_metrics['word_substitutions']:.1f}, "
+                       f"Insertions: {val_metrics['word_insertions']:.1f}, "
+                       f"Deletions: {val_metrics['word_deletions']:.1f}")
+            logger.info(f"  Learning Rate: {self.optimizer.param_groups[0]['lr']:.2e}")
             if self.epochs_without_improvement > 0:
-                print(f"  Epochs without improvement: {self.epochs_without_improvement}")
-            print("-" * 50)
-            
+                logger.info(f"  Epochs without improvement: {self.epochs_without_improvement}")
+            logger.info("-" * 50)
+
             # Early stopping check
             if self.early_stopping_patience is not None:
                 if self.epochs_without_improvement >= self.early_stopping_patience:
-                    print(f"\nEarly stopping triggered after {epoch+1} epochs.")
-                    print(f"No improvement for {self.epochs_without_improvement} epochs.")
-                    print(f"Best validation WER: {self.best_val_wer:.4f}")
+                    logger.info(f"Early stopping triggered after {epoch+1} epochs.")
+                    logger.info(f"No improvement for {self.epochs_without_improvement} epochs.")
+                    logger.info(f"Best validation WER: {self.best_val_wer:.4f}")
                     break
-        
+
         # Save training history (always save, even if training was interrupted)
         try:
             history_path = self.output_dir / 'training_history.json'
             with open(history_path, 'w', encoding='utf-8') as f:
                 json.dump(self.training_history, f, indent=2, ensure_ascii=False)
-            print(f"\nTraining history saved to: {history_path}")
+            logger.info(f"Training history saved to: {history_path}")
         except Exception as e:
-            print(f"\nWarning: Failed to save training history: {e}")
-        
-        print(f"\nTraining completed! Best validation WER: {self.best_val_wer:.4f}")
-        print(f"Model saved to: {self.output_dir}")
+            logger.warning(f"Failed to save training history: {e}")
+
+        logger.info(f"Training completed! Best validation WER: {self.best_val_wer:.4f}")
+        logger.info(f"Model saved to: {self.output_dir}")
 

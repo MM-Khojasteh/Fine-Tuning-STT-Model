@@ -29,11 +29,24 @@ training:
   # Early stopping
   early_stopping_patience: 3  # Number of epochs with no improvement before stopping
   early_stopping_min_delta: 0.001  # Minimum change to qualify as improvement
+  # Optimization
+  gradient_clip_norm: 1.0  # Max norm for gradient clipping (prevents exploding gradients)
+  random_seed: 42  # Random seed for reproducibility (train/val split, shuffling)
+
+# Inference settings
+inference:
+  chunk_duration: 30  # Duration of each chunk in seconds for long audio
+  skip_short_chunks: true  # Skip very short chunks (< 0.1 seconds)
+  min_chunk_samples: 1000  # Minimum samples for a chunk to be processed
+  # Model diagnostics
+  blank_token_threshold: 0.95  # Threshold for warning about excessive blank predictions
   
 # Output settings
 output:
   output_dir: "outputs"
   save_every_n_epochs: 1  # Save checkpoint every N epochs
+  log_file: "outputs/training.log"  # Path to log file (set to null for no file logging)
+  log_level: "INFO"  # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
   
 # Device settings
 device:

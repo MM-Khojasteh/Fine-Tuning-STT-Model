@@ -2,14 +2,15 @@
 
 import os
 import torch
-import torchaudio
-import soundfile as sf
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from tqdm import tqdm
 from pathlib import Path
 from dotenv import load_dotenv
 
-from src.utils import format_timestamp, decode_ctc_predictions
+from src.utils import format_timestamp, decode_ctc_predictions, load_audio_file, load_audio_file_streaming
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -32,7 +33,7 @@ def load_model(checkpoint_path: str = None, model_name: str = None, device: torc
     if model_name is None:
         model_name = "jonatasgrosman/wav2vec2-large-xlsr-53-persian"
     
-    print(f"Loading model: {model_name}")
+    logger.info(f"Loading model: {model_name}")
     # Get Hugging Face token from environment variable (optional)
     hf_token = os.getenv('HUGGINGFACE_TOKEN')
     processor = Wav2Vec2Processor.from_pretrained(
@@ -47,11 +48,11 @@ def load_model(checkpoint_path: str = None, model_name: str = None, device: torc
     
     # Load fine-tuned checkpoint if provided
     if checkpoint_path and os.path.exists(checkpoint_path):
-        print(f"Loading fine-tuned checkpoint: {checkpoint_path}")
+        logger.info(f"Loading fine-tuned checkpoint: {checkpoint_path}")
         try:
             checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
             model.load_state_dict(checkpoint['model_state_dict'])
-            print("Fine-tuned model loaded successfully!")
+            logger.info("Fine-tuned model loaded successfully!")
         except (ValueError, RuntimeError) as e:
             if "torch.load" in str(e) or "CVE-2025-32434" in str(e):
                 raise RuntimeError(
@@ -61,7 +62,7 @@ def load_model(checkpoint_path: str = None, model_name: str = None, device: torc
                 ) from e
             raise
     else:
-        print("Using pretrained model (no fine-tuning)")
+        logger.info("Using pretrained model (no fine-tuning)")
     
     model.to(device)
     model.eval()
@@ -75,10 +76,15 @@ def transcribe_audio_file(
     processor: Wav2Vec2Processor,
     device: torch.device,
     chunk_duration: int = 30,
-    target_sr: int = 16000
+    target_sr: int = 16000,
+    streaming: bool = True,
+    max_memory_mb: float = 500
 ):
     """Transcribe audio file with chunking support for long files.
-    
+
+    Uses memory-efficient streaming for long audio files to avoid loading
+    entire files into memory. Falls back to full loading for small files.
+
     Args:
         file_path: Path to audio file
         model: Wav2Vec2ForCTC model
@@ -86,55 +92,124 @@ def transcribe_audio_file(
         device: PyTorch device
         chunk_duration: Duration of each chunk in seconds
         target_sr: Target sampling rate
-        
+        streaming: If True, use memory-efficient streaming (recommended for files > 5 min)
+        max_memory_mb: Threshold for automatic streaming (files larger than this use streaming)
+
     Returns:
         List of dictionaries with timestamped transcriptions
     """
-    # Load audio
-    # Use soundfile directly to avoid torchcodec dependency in newer torchaudio
-    try:
-        data, sr = sf.read(file_path, dtype='float32')
-        # Convert to torch tensor and ensure shape matches torchaudio format: (channels, samples)
-        if data.ndim == 1:
-            # Mono audio: (samples,) -> (1, samples)
-            waveform = torch.from_numpy(data).unsqueeze(0)
-        else:
-            # Multi-channel audio: (samples, channels) -> (channels, samples)
-            waveform = torch.from_numpy(data).transpose(0, 1)
-    except Exception:
-        # Fallback to torchaudio.load if soundfile fails
-        waveform, sr = torchaudio.load(file_path)
-    
-    # Convert to mono if stereo
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(0, keepdim=True)
-    
-    # Resample to target sampling rate
-    if sr != target_sr:
-        waveform = torchaudio.functional.resample(waveform, sr, target_sr)
-    
-    # Normalize
-    if waveform.abs().max() > 0:
-        waveform = waveform / waveform.abs().max()
-    
+    # Check file size to decide between streaming and full loading
+    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    use_streaming = streaming or file_size_mb > max_memory_mb
+
+    if use_streaming:
+        logger.info(f"Using memory-efficient streaming for {file_path} ({file_size_mb:.1f} MB)")
+        return _transcribe_audio_streaming(
+            file_path, model, processor, device, chunk_duration, target_sr
+        )
+    else:
+        logger.info(f"Loading full audio file {file_path} ({file_size_mb:.1f} MB)")
+        return _transcribe_audio_full(
+            file_path, model, processor, device, chunk_duration, target_sr
+        )
+
+
+def _transcribe_audio_streaming(
+    file_path: str,
+    model: Wav2Vec2ForCTC,
+    processor: Wav2Vec2Processor,
+    device: torch.device,
+    chunk_duration: int = 30,
+    target_sr: int = 16000
+):
+    """Transcribe using memory-efficient streaming.
+
+    Processes audio in streaming fashion, keeping memory usage constant
+    regardless of file length.
+    """
+    transcript_data = []
+    chunk_index = 0
+
+    for waveform, start_time, end_time in load_audio_file_streaming(
+        file_path,
+        target_sampling_rate=target_sr,
+        chunk_duration=chunk_duration,
+        mono=True,
+        normalize=True
+    ):
+        chunk_index += 1
+
+        # Process chunk
+        input_values = processor(
+            waveform.squeeze().numpy(),
+            sampling_rate=target_sr,
+            return_tensors="pt",
+            padding=True
+        ).input_values.to(device)
+
+        # Transcribe
+        with torch.no_grad():
+            logits = model(input_values).logits
+
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcriptions = decode_ctc_predictions(processor, predicted_ids)
+        transcription = transcriptions[0] if transcriptions else ""
+
+        # Filter out empty or non-speech transcriptions
+        if transcription and transcription.lower() not in ["music", "no speech", ""]:
+            transcript_data.append({
+                "chunk": chunk_index,
+                "start": format_timestamp(int(start_time)),
+                "end": format_timestamp(int(end_time)),
+                "text": transcription
+            })
+
+        # Explicitly delete tensors to free GPU memory immediately
+        del input_values, logits, predicted_ids
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+    return transcript_data
+
+
+def _transcribe_audio_full(
+    file_path: str,
+    model: Wav2Vec2ForCTC,
+    processor: Wav2Vec2Processor,
+    device: torch.device,
+    chunk_duration: int = 30,
+    target_sr: int = 16000
+):
+    """Transcribe by loading full audio file (original behavior).
+
+    Suitable for smaller audio files where memory is not a concern.
+    """
+    # Load audio using shared utility
+    waveform, _ = load_audio_file(
+        file_path,
+        target_sampling_rate=target_sr,
+        mono=True,
+        normalize=True
+    )
+
     # Chunk audio
     chunk_samples = chunk_duration * target_sr
     total_samples = waveform.shape[1]
     num_chunks = (total_samples + chunk_samples - 1) // chunk_samples
-    
-    print(f"Splitting into {num_chunks} chunks...")
-    
+
+    logger.info(f"Splitting into {num_chunks} chunks...")
+
     transcript_data = []
-    
+
     for i in tqdm(range(num_chunks), desc="Transcribing"):
         start_sample = i * chunk_samples
         end_sample = min((i + 1) * chunk_samples, total_samples)
         chunk = waveform[:, start_sample:end_sample]
-        
+
         # Skip very short chunks
         if chunk.shape[1] < 1000:
             continue
-        
+
         # Process chunk
         input_values = processor(
             chunk.squeeze(),
@@ -142,15 +217,15 @@ def transcribe_audio_file(
             return_tensors="pt",
             padding=True
         ).input_values.to(device)
-        
+
         # Transcribe
         with torch.no_grad():
             logits = model(input_values).logits
-        
+
         predicted_ids = torch.argmax(logits, dim=-1)
         transcriptions = decode_ctc_predictions(processor, predicted_ids)
         transcription = transcriptions[0] if transcriptions else ""
-        
+
         # Filter out empty or non-speech transcriptions
         if transcription and transcription.lower() not in ["music", "no speech", ""]:
             start_time = format_timestamp(i * chunk_duration)
@@ -161,7 +236,7 @@ def transcribe_audio_file(
                 "end": end_time,
                 "text": transcription
             })
-    
+
     return transcript_data
 
 
@@ -199,40 +274,64 @@ def main():
         default=None,
         help='Path to save transcription (optional, prints to stdout if not specified)'
     )
-    
+    parser.add_argument(
+        '--streaming',
+        action='store_true',
+        default=True,
+        help='Use memory-efficient streaming for large audio files (default: True)'
+    )
+    parser.add_argument(
+        '--no-streaming',
+        action='store_false',
+        dest='streaming',
+        help='Disable streaming and load full audio file into memory'
+    )
+    parser.add_argument(
+        '--max-memory-mb',
+        type=float,
+        default=500,
+        help='Threshold in MB for automatic streaming (default: 500)'
+    )
+
     args = parser.parse_args()
-    
+
+    # Setup logging
+    from src.logging_config import setup_logging
+    setup_logging(log_level="INFO")
+
     # Check if audio file exists
     if not os.path.exists(args.audio_file):
         raise FileNotFoundError(f"Audio file not found: {args.audio_file}")
-    
+
     # Load model
     model, processor, device = load_model(
         checkpoint_path=args.checkpoint,
         model_name=args.model
     )
-    
-    print(f"Using device: {device}")
-    print(f"Transcribing: {args.audio_file}")
-    
+
+    logger.info(f"Using device: {device}")
+    logger.info(f"Transcribing: {args.audio_file}")
+
     # Transcribe
     transcript_data = transcribe_audio_file(
         file_path=args.audio_file,
         model=model,
         processor=processor,
         device=device,
-        chunk_duration=args.chunk_duration
+        chunk_duration=args.chunk_duration,
+        streaming=args.streaming,
+        max_memory_mb=args.max_memory_mb
     )
-    
+
     # Output results
     output_text = "\nTimestamped Transcription:\n\n"
     for entry in transcript_data:
         output_text += f"[{entry['start']} - {entry['end']}] {entry['text']}\n"
-    
+
     if args.output:
         with open(args.output, 'w', encoding='utf-8') as f:
             f.write(output_text)
-        print(f"\nTranscription saved to: {args.output}")
+        logger.info(f"Transcription saved to: {args.output}")
     else:
         print(output_text)
 

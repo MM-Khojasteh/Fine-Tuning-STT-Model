@@ -4,12 +4,14 @@ A complete PyTorch GPU-based fine-tuning pipeline for the Persian Wav2Vec2 model
 
 ## Features
 
-- **GPU-accelerated training** with automatic device detection
-- **Comprehensive evaluation metrics**: WER (Word Error Rate), CER (Character Error Rate), and BLEU score
-- **Robust data handling**: Automatically matches audio files with transcripts from JSON files
-- **Train/Validation/Test splits**: 80/20 split for train/validation, separate test set
-- **Model checkpointing**: Saves best model and periodic checkpoints
-- **Chunked inference**: Handles long audio files by splitting into chunks
+- **GPU-accelerated training** with automatic device detection and mixed precision (FP16)
+- **Comprehensive evaluation metrics**: WER, CER, BLEU, ROUGE-1/2/L, Word F1, and detailed error analysis
+- **Robust data handling**: Optimized dictionary-based matching of audio files with transcripts
+- **Train/Validation/Test splits**: Configurable split with reproducible random seed
+- **Model checkpointing**: Saves best model and periodic checkpoints with optimizer/scheduler state
+- **Memory-efficient inference**: Streaming audio processing for files of any length
+- **Structured logging**: Python logging framework with configurable levels and file output
+- **Persian text cleaning**: Handles speaker labels and special markers in call-center transcripts
 
 ## Project Structure
 
@@ -17,11 +19,12 @@ A complete PyTorch GPU-based fine-tuning pipeline for the Persian Wav2Vec2 model
 Fine-Tuning-STT-Model/
 ├── src/
 │   ├── __init__.py
-│   ├── data_loader.py          # Load and match audio files with transcripts
+│   ├── data_loader.py          # Load and match audio files with transcripts (O(1) lookup)
 │   ├── dataset.py               # PyTorch Dataset class
-│   ├── trainer.py               # Training loop with GPU support
-│   ├── evaluator.py             # Evaluation metrics (WER, CER, BLEU)
-│   └── utils.py                 # Utility functions
+│   ├── trainer.py               # Training loop with GPU support and logging
+│   ├── evaluator.py             # Evaluation metrics (WER, CER, BLEU, ROUGE)
+│   ├── utils.py                 # Utility functions (audio loading, CTC decode, GPU helpers)
+│   └── logging_config.py        # Structured logging configuration
 ├── config/
 │   └── config.yaml              # Training hyperparameters
 ├── dataset/
@@ -30,7 +33,7 @@ Fine-Tuning-STT-Model/
 │   └── test_audio/              # Test audio files
 ├── train.py                     # Main training script
 ├── evaluate.py                  # Evaluation script
-├── inference.py                 # Inference script
+├── inference.py                 # Inference script with streaming support
 ├── requirements.txt             # Dependencies
 └── README.md                    # This file
 ```
@@ -97,8 +100,14 @@ model:
 training:
   batch_size: 4
   num_epochs: 5
-  learning_rate: 3e-4
+  learning_rate: 0.0003  # Scientific notation (3e-4) handled correctly
+  gradient_clip_norm: 1.0  # Configurable gradient clipping
+  random_seed: 42  # For reproducible train/val splits
   # ... more parameters
+
+output:
+  log_file: "outputs/training.log"  # Structured logging to file
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
 ```
 
 ## Usage
@@ -173,10 +182,20 @@ Options:
 - `--model`: Hugging Face model name (default: Persian Wav2Vec2)
 - `--chunk-duration`: Chunk duration in seconds for long files (default: 30)
 - `--output`: Path to save transcription (optional, prints to stdout if not specified)
+- `--streaming`: Use memory-efficient streaming for large files (default: True)
+- `--no-streaming`: Load full audio file into memory
+- `--max-memory-mb`: Threshold for automatic streaming (default: 500)
 
-Example:
+Examples:
 ```bash
+# Standard inference with automatic streaming for large files
 python inference.py dataset/test_audio/test_file_1.wav --checkpoint outputs/best_model.pt --output transcription.txt
+
+# Force streaming mode for memory-constrained environments
+python inference.py long_audio.wav --checkpoint outputs/best_model.pt --streaming
+
+# Process small file without streaming overhead
+python inference.py short_audio.wav --checkpoint outputs/best_model.pt --no-streaming
 ```
 
 ## Training Output
@@ -185,6 +204,7 @@ Training produces:
 - **Checkpoints**: Saved in `outputs/checkpoints/` (one per epoch)
 - **Best model**: `outputs/best_model.pt` (model with lowest validation WER)
 - **Training history**: `outputs/training_history.json` (metrics for each epoch)
+- **Logs**: `outputs/training.log` (structured logs with timestamps and severity levels)
 
 ## Evaluation Metrics
 
@@ -198,6 +218,32 @@ The evaluation script calculates:
 - CUDA-compatible GPU recommended for training
 - Minimum 8GB VRAM for batch size 4
 - Adjust `batch_size` in config if you encounter out-of-memory errors
+
+## New Features
+
+### Memory-Efficient Streaming Inference
+For long audio files, the inference script now supports memory-efficient streaming:
+- Automatically uses streaming for files > 500MB
+- Constant memory usage regardless of file length
+- GPU cache cleared between chunks to prevent OOM
+- Configurable via `--streaming` / `--no-streaming` flags
+
+### Structured Logging
+The pipeline now uses Python's `logging` module:
+- Configurable log levels (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- Logs written to both console and file (`outputs/training.log`)
+- Timestamps and severity levels for all messages
+- Better integration with monitoring systems
+
+### Optimized Data Loading
+- Dictionary-based O(1) lookup for matching audio files with transcripts
+- Significantly faster loading for large datasets
+- Case-insensitive filename matching
+
+### Shared Audio Utilities
+- Centralized audio loading in `src/utils.py`
+- Consistent preprocessing across training and inference
+- Soundfile primary loading with torchaudio fallback
 
 ## Troubleshooting
 

@@ -11,40 +11,86 @@ from src.data_loader import load_dataset
 from src.dataset import AudioTranscriptDataset
 from src.trainer import Trainer
 from src.utils import log_gpu_memory
+from src.logging_config import setup_logging, get_logger
 
 # Load environment variables from .env file
 load_dotenv()
 
+# Setup logging
+logger = get_logger(__name__)
+
+
+def convert_numeric_values(obj):
+    """Recursively convert numeric string values to proper numeric types.
+
+    This handles cases where YAML parsers may return strings for scientific
+    notation (e.g., '3e-4', '1e-6') or other numeric formats.
+
+    Args:
+        obj: Object to process (dict, list, or scalar)
+
+    Returns:
+        Object with numeric strings converted to int/float
+    """
+    if isinstance(obj, dict):
+        return {key: convert_numeric_values(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numeric_values(item) for item in obj]
+    elif isinstance(obj, str):
+        # Try to convert scientific notation and other numeric strings
+        try:
+            # Try int first
+            if obj.isdigit() or (obj.startswith('-') and obj[1:].isdigit()):
+                return int(obj)
+            # Try float (handles scientific notation like 3e-4, 1.5e-6)
+            float_val = float(obj)
+            # Only convert if it looks like a number (not a regular string)
+            # Check if the string represents a number
+            if any(c in obj for c in '0123456789.eE+-'):
+                # Verify it actually parses back consistently
+                if str(float_val) == obj or f"{float_val:.1e}" == obj or obj.lower() in ('inf', '-inf', 'nan'):
+                    return float_val
+        except (ValueError, TypeError):
+            pass
+        return obj
+    return obj
+
 
 def load_config(config_path: str = "config/config.yaml") -> dict:
-    """Load configuration from YAML file.
-    
+    """Load configuration from YAML file with proper numeric type handling.
+
     Args:
         config_path: Path to config file
-        
+
     Returns:
-        Configuration dictionary
+        Configuration dictionary with numeric values properly typed
     """
+    logger.info(f"Loading configuration from {config_path}")
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+
+    # Ensure numeric values are properly typed (handles scientific notation)
+    config = convert_numeric_values(config)
+
+    logger.debug("Configuration loaded and processed successfully")
     return config
 
 
 def setup_device(config: dict) -> torch.device:
     """Setup PyTorch device.
-    
+
     Args:
         config: Configuration dictionary
-        
+
     Returns:
         PyTorch device
     """
     use_cuda = config.get('device', {}).get('use_cuda', True) and torch.cuda.is_available()
     device = torch.device('cuda' if use_cuda else 'cpu')
-    print(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
     if use_cuda:
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"CUDA Version: {torch.version.cuda}")
+        logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
+        logger.info(f"CUDA Version: {torch.version.cuda}")
         log_gpu_memory("Initial", device)
     return device
 
@@ -53,24 +99,33 @@ def main():
     """Main training function."""
     # Load configuration
     config = load_config()
-    
+
+    # Setup logging based on config (with defaults)
+    log_file = config.get('output', {}).get('log_file')
+    log_level = config.get('output', {}).get('log_level', 'INFO')
+    setup_logging(log_file=log_file, log_level=log_level)
+
+    logger.info("=" * 50)
+    logger.info("Starting Wav2Vec2 Fine-tuning")
+    logger.info("=" * 50)
+
     # Setup device
     device = setup_device(config)
-    
+
     # Load dataset
-    print("Loading dataset...")
+    logger.info("Loading dataset...")
     audio_transcript_pairs = load_dataset(
         audio_files_dir=config['data']['audio_files_dir'],
         json_info_dir=config['data']['json_info_dir']
     )
-    
+
     if len(audio_transcript_pairs) == 0:
         raise ValueError("No audio-transcript pairs found! Check your data paths.")
-    
-    print(f"Loaded {len(audio_transcript_pairs)} audio-transcript pairs")
-    
+
+    logger.info(f"Loaded {len(audio_transcript_pairs)} audio-transcript pairs")
+
     # Load model and processor
-    print(f"Loading model: {config['model']['name']}...")
+    logger.info(f"Loading model: {config['model']['name']}...")
     # Get Hugging Face token from environment variable (optional)
     hf_token = os.getenv('HUGGINGFACE_TOKEN')
     processor = Wav2Vec2Processor.from_pretrained(
@@ -82,10 +137,10 @@ def main():
         token=hf_token if hf_token else None,
         use_safetensors=True
     )
-    
+
     # Freeze feature extractor (optional - can be enabled for faster training)
     # model.freeze_feature_extractor()
-    
+
     # Create dataset
     dataset = AudioTranscriptDataset(
         audio_transcript_pairs=audio_transcript_pairs,
@@ -93,28 +148,29 @@ def main():
         target_sampling_rate=16000,
         max_audio_length=config['training'].get('max_audio_length')
     )
-    
+
     # Split into train and validation (80/20 split)
     # Note: Test set is separate and loaded from test_audio folder during evaluation
     train_val_split = config['data']['train_val_split']
     train_size = int(train_val_split * len(dataset))
     val_size = len(dataset) - train_size
-    
+
+    # Use configurable random seed for reproducibility
+    random_seed = config['training'].get('random_seed', 42)
     train_dataset, val_dataset = random_split(
         dataset,
         [train_size, val_size],
-        generator=torch.Generator().manual_seed(42)  # For reproducibility
+        generator=torch.Generator().manual_seed(random_seed)
     )
-    
-    print(f"\nDataset Split:")
-    print(f"  Train samples: {len(train_dataset)} ({len(train_dataset)/len(dataset)*100:.1f}%)")
-    print(f"  Validation samples: {len(val_dataset)} ({len(val_dataset)/len(dataset)*100:.1f}%)")
-    print(f"  Test samples: Will be loaded from '{config['data']['test_audio_dir']}' during evaluation")
-    print()
-    
+
+    logger.info(f"Dataset Split:")
+    logger.info(f"  Train samples: {len(train_dataset)} ({len(train_dataset)/len(dataset)*100:.1f}%)")
+    logger.info(f"  Validation samples: {len(val_dataset)} ({len(val_dataset)/len(dataset)*100:.1f}%)")
+    logger.info(f"  Test samples: Will be loaded from '{config['data']['test_audio_dir']}' during evaluation")
+
     # Create DataLoaders with custom collate function for padding
     from src.dataset import collate_fn
-    
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
@@ -123,7 +179,7 @@ def main():
         pin_memory=True if device.type == 'cuda' else False,
         collate_fn=collate_fn
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['training']['batch_size'],
@@ -132,13 +188,13 @@ def main():
         pin_memory=True if device.type == 'cuda' else False,
         collate_fn=collate_fn
     )
-    
+
     # Create trainer
     trainer_config = {
         **config['training'],
         'output_dir': config['output']['output_dir']
     }
-    
+
     trainer = Trainer(
         model=model,
         processor=processor,
@@ -147,11 +203,11 @@ def main():
         device=device,
         config=trainer_config
     )
-    
+
     # Start training
     trainer.train()
-    
-    print("\nTraining completed successfully!")
+
+    logger.info("Training completed successfully!")
 
 
 if __name__ == "__main__":

@@ -1,12 +1,12 @@
 """PyTorch Dataset class for audio-transcript pairs."""
 
 import torch
-import torchaudio
-import soundfile as sf
 from torch.utils.data import Dataset
 from transformers import Wav2Vec2Processor
 from typing import List, Tuple, Optional, Dict
 import re
+
+from src.utils import load_audio_file
 
 
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
@@ -104,48 +104,30 @@ class AudioTranscriptDataset(Dataset):
             Dictionary with 'input_values', 'attention_mask', and 'labels'
         """
         audio_path, transcript = self.audio_transcript_pairs[idx]
-        
-        # Load and preprocess audio
-        # Use soundfile directly to avoid torchcodec dependency in newer torchaudio
-        try:
-            data, sr = sf.read(audio_path, dtype='float32')
-            # Convert to torch tensor and ensure shape matches torchaudio format: (channels, samples)
-            if data.ndim == 1:
-                # Mono audio: (samples,) -> (1, samples)
-                waveform = torch.from_numpy(data).unsqueeze(0)
-            else:
-                # Multi-channel audio: (samples, channels) -> (channels, samples)
-                waveform = torch.from_numpy(data).transpose(0, 1)
-        except Exception:
-            # Fallback to torchaudio.load if soundfile fails
-            waveform, sr = torchaudio.load(audio_path)
-        
-        # Convert to mono if stereo
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(0, keepdim=True)
-        
-        # Resample to target sampling rate
-        if sr != self.target_sampling_rate:
-            waveform = torchaudio.functional.resample(
-                waveform, sr, self.target_sampling_rate
-            )
-        
-        # Normalize audio
-        waveform = waveform.squeeze(0)
-        original_duration = waveform.shape[0] / self.target_sampling_rate
-        
-        if waveform.abs().max() > 0:
-            waveform = waveform / waveform.abs().max()
-        
+
+        # Load and preprocess audio using shared utility
+        waveform, original_sr = load_audio_file(
+            audio_path,
+            target_sampling_rate=self.target_sampling_rate,
+            mono=True,
+            normalize=True
+        )
+
+        # Calculate durations for logging
+        original_duration = waveform.shape[1] / self.target_sampling_rate
+
         # Truncate if max_audio_length is specified
         was_truncated = False
         if self.max_audio_length is not None:
             max_samples = int(self.max_audio_length * self.target_sampling_rate)
-            if waveform.shape[0] > max_samples:
+            if waveform.shape[1] > max_samples:
                 was_truncated = True
-                waveform = waveform[:max_samples]
-        
-        final_duration = waveform.shape[0] / self.target_sampling_rate
+                waveform = waveform[:, :max_samples]
+
+        final_duration = waveform.shape[1] / self.target_sampling_rate
+
+        # Squeeze channel dimension for processor (mono audio -> 1D tensor)
+        waveform = waveform.squeeze(0)
         
         # Log audio processing info (only for first few samples or when truncation occurs)
         # This helps verify audio processing is working correctly

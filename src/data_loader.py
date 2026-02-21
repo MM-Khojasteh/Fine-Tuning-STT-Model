@@ -60,54 +60,97 @@ def find_transcript_for_audio(
     return None
 
 
+def build_transcript_lookup(json_files: List[Tuple[str, str]]) -> dict:
+    """Build a dictionary mapping audio filenames to transcripts.
+
+    This creates an O(1) lookup table for efficient transcript retrieval,
+    avoiding the need for nested loops during matching.
+
+    Args:
+        json_files: List of tuples (json_path, field_name) where field_name
+                   is the key containing the audio filename in each record
+
+    Returns:
+        Dictionary with lowercase filename as key and transcript as value
+    """
+    transcript_lookup = {}
+
+    for json_path, field_name in json_files:
+        if not os.path.exists(json_path):
+            print(f"Warning: JSON file not found: {json_path}")
+            continue
+
+        try:
+            records = load_json_file(json_path)
+            for record in records:
+                json_audio_field = record.get(field_name)
+                transcript = record.get('transcript', '')
+
+                if json_audio_field and transcript:
+                    # Normalize filename and use lowercase for case-insensitive lookup
+                    audio_filename = os.path.basename(json_audio_field)
+                    lookup_key = audio_filename.lower()
+                    transcript_lookup[lookup_key] = transcript
+        except Exception as e:
+            print(f"Warning: Error reading {json_path}: {e}")
+            continue
+
+    return transcript_lookup
+
+
 def match_audio_with_transcripts(
     audio_dir: str,
     json_files: List[Tuple[str, str]],
     audio_files_dir: str = "dataset/audio_files"
 ) -> List[Tuple[str, str]]:
     """Match audio files with their transcripts from JSON files.
-    
-    First iterates through audio files, then searches JSON files for matching transcripts.
-    
+
+    Uses a dictionary-based O(1) lookup for efficient matching, building the
+    lookup table once and then matching all audio files against it.
+
     Args:
         audio_dir: Directory containing audio files
         json_files: List of tuples (json_path, field_name) where field_name is either
                    'recording_file' or 'audio_file_path'
         audio_files_dir: Base directory for audio files (default: "dataset/audio_files")
-        
+
     Returns:
         List of tuples (audio_path, transcript) for matched pairs
     """
     audio_transcript_pairs = []
     audio_dir_path = Path(audio_dir)
-    
+
     # First, get all audio files
     if not audio_dir_path.exists():
         print(f"Warning: Audio directory not found: {audio_dir}")
         return audio_transcript_pairs
-    
+
     audio_files = (
-        list(audio_dir_path.glob("*.wav")) + 
-        list(audio_dir_path.glob("*.mp3")) + 
+        list(audio_dir_path.glob("*.wav")) +
+        list(audio_dir_path.glob("*.mp3")) +
         list(audio_dir_path.glob("*.flac"))
     )
-    
+
     print(f"Found {len(audio_files)} audio files")
-    
-    # For each audio file, search in JSON files for matching transcript
+
+    # Build lookup dictionary from JSON files (O(J*R) where J=JSON files, R=records)
+    transcript_lookup = build_transcript_lookup(json_files)
+    print(f"Loaded {len(transcript_lookup)} transcript entries from JSON files")
+
+    # Match audio files using O(1) dictionary lookup
     matched_count = 0
     for audio_file in audio_files:
-        audio_filename = audio_file.name
-        
-        # Search for transcript in JSON files
-        transcript = find_transcript_for_audio(audio_filename, json_files)
-        
+        audio_filename = audio_file.name.lower()  # Case-insensitive lookup
+
+        # O(1) lookup instead of O(J*R) search
+        transcript = transcript_lookup.get(audio_filename)
+
         if transcript:
             audio_transcript_pairs.append((str(audio_file), transcript))
             matched_count += 1
         else:
-            print(f"Warning: No transcript found for {audio_filename}")
-    
+            print(f"Warning: No transcript found for {audio_file.name}")
+
     print(f"Matched {matched_count} audio files with transcripts out of {len(audio_files)} total")
     return audio_transcript_pairs
 
