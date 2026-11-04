@@ -1,289 +1,89 @@
-# Wav2Vec2 Fine-tuning Project
+# Wav2Vec2 Persian STT — Fine-Tuning Pipeline
 
-A complete PyTorch GPU-based fine-tuning pipeline for the Persian Wav2Vec2 model (`jonatasgrosman/wav2vec2-large-xlsr-53-persian`) using custom audio-transcript pairs.
+PyTorch pipeline for fine-tuning the Persian Wav2Vec2 checkpoint
+(`jonatasgrosman/wav2vec2-large-xlsr-53-persian`) on custom audio-transcript
+pairs, with training, evaluation, and streaming inference.
 
 ## Features
 
-- **GPU-accelerated training** with automatic device detection and mixed precision (FP16)
-- **Comprehensive evaluation metrics**: WER, CER, BLEU, ROUGE-1/2/L, Word F1, and detailed error analysis
-- **Robust data handling**: Optimized dictionary-based matching of audio files with transcripts
-- **Train/Validation/Test splits**: Configurable split with reproducible random seed
-- **Model checkpointing**: Saves best model and periodic checkpoints with optimizer/scheduler state
-- **Memory-efficient inference**: Streaming audio processing for files of any length
-- **Structured logging**: Python logging framework with configurable levels and file output
-- **Persian text cleaning**: Handles speaker labels and special markers in call-center transcripts
+- **Training** — GPU + mixed precision, gradient accumulation & clipping, LR warmup + ReduceLROnPlateau, early stopping, best/periodic checkpointing
+- **Evaluation** — WER, CER, BLEU, ROUGE-1/2/L, Word F1, exact match, plus error-type and length-bucketed breakdowns
+- **Inference** — chunked, memory-efficient streaming for arbitrarily long audio
+- **Configuration** — every operational value overridable via environment variables; no secrets or data in git
 
 ## Project Structure
 
-```
+```text
 Fine-Tuning-STT-Model/
-├── src/
-│   ├── __init__.py
-│   ├── data_loader.py          # Load and match audio files with transcripts (O(1) lookup)
-│   ├── dataset.py               # PyTorch Dataset class
-│   ├── trainer.py               # Training loop with GPU support and logging
-│   ├── evaluator.py             # Evaluation metrics (WER, CER, BLEU, ROUGE)
-│   ├── utils.py                 # Utility functions (audio loading, CTC decode, GPU helpers)
-│   └── logging_config.py        # Structured logging configuration
-├── config/
-│   └── config.yaml              # Training hyperparameters
-├── dataset/
-│   ├── audio_files/             # Training audio files
-│   ├── info/                    # JSON files with transcripts
-│   └── test_audio/              # Test audio files
-├── train.py                     # Main training script
-├── evaluate.py                  # Evaluation script
-├── inference.py                 # Inference script with streaming support
-├── requirements.txt             # Dependencies
-└── README.md                    # This file
+├── src/                     # config, data loading, dataset, trainer, evaluator, utils, logging
+├── config/config.yaml       # configuration schema (safe defaults)
+├── train.py                 # fine-tune
+├── evaluate.py              # test-set evaluation
+├── test_predictions.py      # per-sample prediction analysis & reporting
+├── inference.py             # streaming transcription CLI
+├── install_pytorch_cuda.ps1 # CUDA 12.1 PyTorch installer
+├── requirements.txt
+└── .env.example             # documented environment variable template
 ```
 
-## Installation
+`dataset/` (audio + transcripts) and `outputs/` (checkpoints, logs, results)
+are required at runtime but intentionally excluded from the repository.
 
-1. Clone or navigate to the project directory:
-```bash
-cd Fine-Tuning-STT-Model
-```
+## Setup
 
-2. Install dependencies:
 ```bash
 pip install -r requirements.txt
+
+# GPU (CUDA 12.1) — Windows alternative: .\install_pytorch_cuda.ps1
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+cp .env.example .env   # add HUGGINGFACE_TOKEN (private/gated models) and optional overrides
 ```
 
-3. Set up environment variables (optional, only needed for private models or gated repositories):
-```bash
-# Copy the example file
-cp .env.example .env
+## Data Layout
 
-# Edit .env and add your Hugging Face token
-# Get your token from: https://huggingface.co/settings/tokens
-# HUGGINGFACE_TOKEN=your_huggingface_token_here
+```text
+dataset/
+├── audio_files/     # .wav / .mp3 / .flac training audio
+├── info/            # transcript JSONs (fields: recording_file | audio_file_path, transcript)
+└── test_audio/      # held-out audio + optional test.json (audio_file_path, transcript)
 ```
 
-4. **Install PyTorch with CUDA 12.1 support** (recommended for GPU training):
-   ```bash
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-   ```
-   
-   Or use the provided installation script:
-   ```powershell
-   .\install_pytorch_cuda.ps1
-   ```
-   
-   **Note**: Currently PyTorch 2.5.1+cu121 is the latest CUDA 12.1 build. Version 2.6.0+ is recommended for security (CVE-2025-32434) but not yet available with CUDA 12.1. When 2.6.0+cu121 becomes available, upgrade to it.
-   
-   **For CPU-only** (slower, but works without GPU and supports 2.6.0+):
-   ```bash
-   pip install --upgrade torch>=2.6.0 torchvision>=0.21.0 torchaudio>=2.6.0
-   ```
-
-## Dataset Format
-
-The project expects the following structure:
-
-- **Audio files**: Located in `dataset/audio_files/` (supports .wav, .mp3, .flac)
-- **Transcripts**: JSON files in `dataset/info/`:
-  - `postgres_laravel_calls.json`: Contains `recording_file` and `transcript` fields
-  - `postgres_public_call_transcripts.json`: Contains `audio_file_path` and `transcript` fields
-- **Test audio**: Located in `dataset/test_audio/`
-
-The data loader automatically matches audio files with their corresponding transcripts based on filename.
+Audio files are matched to transcripts by filename (case-insensitive).
 
 ## Configuration
 
-Edit `config/config.yaml` to customize training parameters:
-
-```yaml
-model:
-  name: "jonatasgrosman/wav2vec2-large-xlsr-53-persian"
-
-training:
-  batch_size: 4
-  num_epochs: 5
-  learning_rate: 0.0003  # Scientific notation (3e-4) handled correctly
-  gradient_clip_norm: 1.0  # Configurable gradient clipping
-  random_seed: 42  # For reproducible train/val splits
-  # ... more parameters
-
-output:
-  log_file: "outputs/training.log"  # Structured logging to file
-  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-```
+Resolution order: **shell env → `.env` → `config/config.yaml` (safe defaults)**.
+All overrides use `WAV2VEC2_*` variables — dataset paths, learning rate, batch
+size, early stopping, chunk duration, device toggles, and more. The full
+documented matrix is in [`.env.example`](.env.example). Invalid values fail
+fast with a clear error naming the variable.
 
 ## Usage
 
-### Training
-
-Train the model on your dataset:
-
 ```bash
-python train.py
+python train.py                                                 # train → outputs/best_model.pt
+python evaluate.py --checkpoint outputs/best_model.pt           # test-set metrics
+python test_predictions.py --checkpoint outputs/best_model.pt   # per-sample analysis + confidence
+python inference.py audio.wav --checkpoint outputs/best_model.pt  # timestamped transcription
 ```
 
-The training script will:
-1. Load audio-transcript pairs from JSON files
-2. Split into 80% train / 20% validation
-3. Fine-tune the Wav2Vec2 model
-4. Save checkpoints and best model to `outputs/`
+Each script supports `--help`. Training artifacts land in `outputs/`:
+`best_model.pt`, `checkpoints/`, `training_history.json`, `training.log`.
 
-### Evaluation
+## Requirements
 
-Evaluate the fine-tuned model on the test set:
+- Python 3.9+
+- CUDA GPU recommended (≥ 8 GB VRAM); CPU fallback is automatic
 
-```bash
-python evaluate.py --checkpoint outputs/best_model.pt
-```
+## Security
 
-Options:
-- `--checkpoint`: Path to model checkpoint (default: `outputs/best_model.pt`)
-- `--test_dir`: Path to test audio directory (overrides config)
-- `--output`: Path to save evaluation results (default: `outputs/evaluation_results.json`)
+Secrets live in `.env` (gitignored) and are never hardcoded. Datasets, audio,
+weights, and logs are never tracked — `.gitignore` uses a strict allowlist so
+nothing sensitive can be committed accidentally.
 
-The evaluation script provides comprehensive metrics including:
-- **Error Rates**: WER (Word Error Rate), CER (Character Error Rate)
-- **Accuracy Metrics**: Word Accuracy, Character Accuracy, Exact Match Accuracy
-- **Quality Scores**: BLEU, ROUGE-1/2/L, Word F1 Score
-- **Error Analysis**: Substitutions, Insertions, Deletions, Length Analysis
-- **Performance by Length**: Metrics grouped by transcript length categories
-- **Sample Predictions**: Best and worst prediction examples
+## License & Acknowledgments
 
-### Comprehensive Prediction Testing
-
-For detailed prediction analysis with confidence scores and extensive reporting:
-
-```bash
-python test_predictions.py --checkpoint outputs/best_model.pt
-```
-
-Options:
-- `--checkpoint`: Path to model checkpoint (default: `outputs/best_model.pt`)
-- `--test_dir`: Path to test audio directory (overrides config)
-- `--output`: Path to save detailed results (default: `outputs/prediction_test_results.json`)
-- `--num_samples`: Number of sample predictions to show (default: all)
-
-This script provides:
-- **Comprehensive Metrics**: All standard metrics plus confidence analysis
-- **Best/Worst Predictions**: Detailed examples of model performance
-- **Confidence Analysis**: Correlation between model confidence and accuracy
-- **Performance Breakdown**: Metrics by transcript length categories
-- **Detailed JSON Output**: Complete results for further analysis
-
-### Inference
-
-Transcribe an audio file using the fine-tuned model:
-
-```bash
-python inference.py path/to/audio.wav --checkpoint outputs/best_model.pt
-```
-
-Options:
-- `audio_file`: Path to audio file to transcribe (required)
-- `--checkpoint`: Path to fine-tuned model checkpoint (optional, uses pretrained if not specified)
-- `--model`: Hugging Face model name (default: Persian Wav2Vec2)
-- `--chunk-duration`: Chunk duration in seconds for long files (default: 30)
-- `--output`: Path to save transcription (optional, prints to stdout if not specified)
-- `--streaming`: Use memory-efficient streaming for large files (default: True)
-- `--no-streaming`: Load full audio file into memory
-- `--max-memory-mb`: Threshold for automatic streaming (default: 500)
-
-Examples:
-```bash
-# Standard inference with automatic streaming for large files
-python inference.py dataset/test_audio/test_file_1.wav --checkpoint outputs/best_model.pt --output transcription.txt
-
-# Force streaming mode for memory-constrained environments
-python inference.py long_audio.wav --checkpoint outputs/best_model.pt --streaming
-
-# Process small file without streaming overhead
-python inference.py short_audio.wav --checkpoint outputs/best_model.pt --no-streaming
-```
-
-## Training Output
-
-Training produces:
-- **Checkpoints**: Saved in `outputs/checkpoints/` (one per epoch)
-- **Best model**: `outputs/best_model.pt` (model with lowest validation WER)
-- **Training history**: `outputs/training_history.json` (metrics for each epoch)
-- **Logs**: `outputs/training.log` (structured logs with timestamps and severity levels)
-
-## Evaluation Metrics
-
-The evaluation script calculates:
-- **WER (Word Error Rate)**: Percentage of word-level errors (lower is better)
-- **CER (Character Error Rate)**: Percentage of character-level errors (lower is better)
-- **BLEU Score**: N-gram overlap metric (higher is better, 0-100 scale)
-
-## GPU Requirements
-
-- CUDA-compatible GPU recommended for training
-- Minimum 8GB VRAM for batch size 4
-- Adjust `batch_size` in config if you encounter out-of-memory errors
-
-## New Features
-
-### Memory-Efficient Streaming Inference
-For long audio files, the inference script now supports memory-efficient streaming:
-- Automatically uses streaming for files > 500MB
-- Constant memory usage regardless of file length
-- GPU cache cleared between chunks to prevent OOM
-- Configurable via `--streaming` / `--no-streaming` flags
-
-### Structured Logging
-The pipeline now uses Python's `logging` module:
-- Configurable log levels (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-- Logs written to both console and file (`outputs/training.log`)
-- Timestamps and severity levels for all messages
-- Better integration with monitoring systems
-
-### Optimized Data Loading
-- Dictionary-based O(1) lookup for matching audio files with transcripts
-- Significantly faster loading for large datasets
-- Case-insensitive filename matching
-
-### Shared Audio Utilities
-- Centralized audio loading in `src/utils.py`
-- Consistent preprocessing across training and inference
-- Soundfile primary loading with torchaudio fallback
-
-## Troubleshooting
-
-### Out of Memory (OOM) Errors
-- Reduce `batch_size` in `config/config.yaml`
-- Reduce `max_audio_length` to process shorter audio segments
-- Enable gradient accumulation: set `gradient_accumulation_steps > 1`
-
-### No Transcripts Found
-- Verify JSON files are in `dataset/info/`
-- Check that audio filenames match the `recording_file` or `audio_file_path` fields in JSON
-- Ensure JSON files are valid and contain `transcript` fields
-
-### Slow Training
-- Ensure GPU is being used (check device output in training logs)
-- Reduce `num_workers` if data loading is bottleneck
-- Consider freezing feature extractor for faster training (uncomment in `train.py`)
-
-### PyTorch Version Error (CVE-2025-32434)
-If you encounter an error about `torch.load` requiring PyTorch 2.6.0+, this is due to security vulnerability CVE-2025-32434.
-
-**Primary Solution (Recommended):** The code now uses safetensors format for loading pretrained models, which bypasses this restriction. Ensure `safetensors>=0.4.0` is installed:
-```bash
-pip install safetensors>=0.4.0
-```
-
-**Alternative Solution:** Upgrade PyTorch to 2.6.0+ when available for your CUDA version:
-```bash
-pip install --upgrade torch>=2.6.0 torchaudio>=2.6.0
-```
-Note: PyTorch 2.6.0+ with CUDA 12.1 support may not be available yet. Check the [PyTorch website](https://pytorch.org/) for the latest CUDA builds.
-
-**Checkpoint Loading:** If you encounter errors when loading saved checkpoints (`.pt` files), you may need to upgrade PyTorch to 2.6.0+ or wait for CUDA 12.1 builds to become available.
-
-## License
-
-This project uses the Wav2Vec2 model from Hugging Face. Please refer to the model's license for usage terms.
-
-## Acknowledgments
-
-- Model: [jonatasgrosman/wav2vec2-large-xlsr-53-persian](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-persian)
-- Framework: [Hugging Face Transformers](https://huggingface.co/transformers/)
-
+Usage is governed by the base model's
+[license](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-persian).
+Built with [Hugging Face Transformers](https://huggingface.co/transformers/).

@@ -1,79 +1,18 @@
 """Main training script for fine-tuning Wav2Vec2 model."""
 
-import os
-import yaml
 import torch
 from torch.utils.data import DataLoader, random_split
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-from dotenv import load_dotenv
 
+from src.config import load_config, get_hf_token
 from src.data_loader import load_dataset
 from src.dataset import AudioTranscriptDataset
 from src.trainer import Trainer
 from src.utils import log_gpu_memory
 from src.logging_config import setup_logging, get_logger
 
-# Load environment variables from .env file
-load_dotenv()
-
 # Setup logging
 logger = get_logger(__name__)
-
-
-def convert_numeric_values(obj):
-    """Recursively convert numeric string values to proper numeric types.
-
-    This handles cases where YAML parsers may return strings for scientific
-    notation (e.g., '3e-4', '1e-6') or other numeric formats.
-
-    Args:
-        obj: Object to process (dict, list, or scalar)
-
-    Returns:
-        Object with numeric strings converted to int/float
-    """
-    if isinstance(obj, dict):
-        return {key: convert_numeric_values(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numeric_values(item) for item in obj]
-    elif isinstance(obj, str):
-        # Try to convert scientific notation and other numeric strings
-        try:
-            # Try int first
-            if obj.isdigit() or (obj.startswith('-') and obj[1:].isdigit()):
-                return int(obj)
-            # Try float (handles scientific notation like 3e-4, 1.5e-6)
-            float_val = float(obj)
-            # Only convert if it looks like a number (not a regular string)
-            # Check if the string represents a number
-            if any(c in obj for c in '0123456789.eE+-'):
-                # Verify it actually parses back consistently
-                if str(float_val) == obj or f"{float_val:.1e}" == obj or obj.lower() in ('inf', '-inf', 'nan'):
-                    return float_val
-        except (ValueError, TypeError):
-            pass
-        return obj
-    return obj
-
-
-def load_config(config_path: str = "config/config.yaml") -> dict:
-    """Load configuration from YAML file with proper numeric type handling.
-
-    Args:
-        config_path: Path to config file
-
-    Returns:
-        Configuration dictionary with numeric values properly typed
-    """
-    logger.info(f"Loading configuration from {config_path}")
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-
-    # Ensure numeric values are properly typed (handles scientific notation)
-    config = convert_numeric_values(config)
-
-    logger.debug("Configuration loaded and processed successfully")
-    return config
 
 
 def setup_device(config: dict) -> torch.device:
@@ -127,14 +66,14 @@ def main():
     # Load model and processor
     logger.info(f"Loading model: {config['model']['name']}...")
     # Get Hugging Face token from environment variable (optional)
-    hf_token = os.getenv('HUGGINGFACE_TOKEN')
+    hf_token = get_hf_token()
     processor = Wav2Vec2Processor.from_pretrained(
         config['model']['name'],
-        token=hf_token if hf_token else None
+        token=hf_token
     )
     model = Wav2Vec2ForCTC.from_pretrained(
         config['model']['name'],
-        token=hf_token if hf_token else None,
+        token=hf_token,
         use_safetensors=True
     )
 
@@ -190,9 +129,12 @@ def main():
     )
 
     # Create trainer
+    # Note: 'device' must be forwarded so mixed_precision and
+    # empty_cache_after_val settings actually take effect in Trainer.
     trainer_config = {
         **config['training'],
-        'output_dir': config['output']['output_dir']
+        'output_dir': config['output']['output_dir'],
+        'device': config.get('device', {})
     }
 
     trainer = Trainer(

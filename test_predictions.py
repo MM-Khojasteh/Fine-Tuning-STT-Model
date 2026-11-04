@@ -1,34 +1,23 @@
 """Comprehensive prediction test script with detailed analysis and sample outputs."""
 
 import os
-import yaml
 import torch
 import json
 from pathlib import Path
 from torch.utils.data import DataLoader
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from tqdm import tqdm
-from dotenv import load_dotenv
 from collections import defaultdict
 
+from src.config import load_config, get_hf_token, DEFAULT_MODEL_NAME
 from src.data_loader import load_dataset, match_audio_with_transcripts, load_test_dataset
 from src.dataset import AudioTranscriptDataset
 from src.evaluator import (
-    evaluate_batch, evaluate_samples, 
+    evaluate_batch, evaluate_samples,
     calculate_performance_by_length,
     normalize_text
 )
 from src.utils import decode_ctc_predictions
-
-# Load environment variables from .env file
-load_dotenv()
-
-
-def load_config(config_path: str = "config/config.yaml") -> dict:
-    """Load configuration from YAML file."""
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    return config
 
 
 def load_model(checkpoint_path: str, device: torch.device):
@@ -53,18 +42,18 @@ def load_model(checkpoint_path: str, device: torch.device):
         raise
     
     config = checkpoint.get('config', {})
-    
-    model_name = config.get('model', {}).get('name', 'jonatasgrosman/wav2vec2-large-xlsr-53-persian')
-    
+
+    model_name = config.get('model', {}).get('name', DEFAULT_MODEL_NAME)
+
     # Get Hugging Face token from environment variable (optional)
-    hf_token = os.getenv('HUGGINGFACE_TOKEN')
+    hf_token = get_hf_token()
     processor = Wav2Vec2Processor.from_pretrained(
         model_name,
-        token=hf_token if hf_token else None
+        token=hf_token
     )
     model = Wav2Vec2ForCTC.from_pretrained(
         model_name,
-        token=hf_token if hf_token else None,
+        token=hf_token,
         use_safetensors=True
     )
     

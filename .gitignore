@@ -1,101 +1,136 @@
-# Byte-compiled / optimized / DLL files
+# ==============================================================================
+# Wav2Vec2 Persian STT - Strict ignore policy (allowlist / least privilege)
+#
+# Strategy: EVERYTHING is ignored by default. Only the paths re-included in
+# the ALLOWLIST section below can ever be tracked. Any new file (data dumps,
+# model weights, scratch scripts, IDE state) therefore stays local
+# automatically - it must be deliberately allowlisted to enter the repository.
+#
+# To track a new file, add an explicit `!` rule to the ALLOWLIST section.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. SECRETS - ignored unconditionally, first and foremost
+# ------------------------------------------------------------------------------
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.*
+*.token
+
+# ------------------------------------------------------------------------------
+# 2. ALLOWLIST - the ONLY paths permitted in the repository
+# ------------------------------------------------------------------------------
+/*
+!/.gitignore
+!/.env.example
+!/README.md
+!/LICENSE
+!/requirements.txt
+!/install_pytorch_cuda.ps1
+!/train.py
+!/evaluate.py
+!/inference.py
+!/test_predictions.py
+!/src/
+!/src/**
+!/config/
+!/config/config.yaml
+
+# ------------------------------------------------------------------------------
+# 3. DEFENSE IN DEPTH - explicitly blocked regardless of any rule above
+# ------------------------------------------------------------------------------
+
+# Virtual environments
+.venv/
+venv/
+env/
+.conda/
+
+# Python bytecode, packaging and test caches
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-*.manifest
-*.spec
-
-# Unit test / coverage reports
-htmlcov/
+.pytest_cache/
 .tox/
 .nox/
 .coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Jupyter Notebook
+htmlcov/
 .ipynb_checkpoints/
-*/.ipynb_checkpoints/*
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Model files
+# Model weights and serialized artifacts (any framework)
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
 *.h5
 *.hdf5
-*.pkl
-*.pickle
-*.pth
-*.pt
-*.onnx
 *.pb
 *.tflite
+*.pkl
+*.pickle
+*.msgpack
+*.ot
 
-# Logs
-*.log
-logs/
-tensorboard_logs/
-runs/
-
-# Checkpoints
-checkpoints/
-models/saved_models/
-models/best_model.pth
-models/checkpoint_*.pth
-
-# Data
-data/
+# Data: audio, transcripts, database exports, results - NEVER publish
+dataset/
 datasets/
-test_audio/
+data/
+outputs/
 *.wav
 *.mp3
 *.flac
+*.ogg
+*.m4a
+*.sqlite
+*.db
+*.sql
+*.duckdb
 
-# OS
+# Experiment tracking
+logs/
+runs/
+wandb/
+mlruns/
+tensorboard_logs/
+
+# Local working notes / internal docs (never published)
+notes/
+
+# IDE, editor, OS and AI-assistant local state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.claude/
+.cursor/
+.DS_Store
 Thumbs.db
-desktop.ini
+Desktop.ini
+$RECYCLE.BIN/
 
-dataset/
-outputs/
+# ------------------------------------------------------------------------------
+# 4. FINAL WORD - secrets restated last so they stay ignored no matter what
+#    is ever added to the allowlist above (gitignore: last match wins)
+# ------------------------------------------------------------------------------
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.*
+*.token

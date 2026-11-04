@@ -5,44 +5,42 @@ import torch
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from tqdm import tqdm
 from pathlib import Path
-from dotenv import load_dotenv
 
+from src.config import get_hf_token, env_str, env_int, DEFAULT_MODEL_NAME
 from src.utils import format_timestamp, decode_ctc_predictions, load_audio_file, load_audio_file_streaming
 from src.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# Load environment variables from .env file
-load_dotenv()
-
 
 def load_model(checkpoint_path: str = None, model_name: str = None, device: torch.device = None):
     """Load model from checkpoint or pretrained.
-    
+
     Args:
         checkpoint_path: Path to fine-tuned checkpoint (optional)
-        model_name: Hugging Face model name (default: Persian Wav2Vec2)
+        model_name: Hugging Face model name (default: WAV2VEC2_MODEL_NAME env
+            variable, falling back to the public Persian Wav2Vec2 checkpoint)
         device: PyTorch device (auto-detect if None)
-        
+
     Returns:
         model, processor, device
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     if model_name is None:
-        model_name = "jonatasgrosman/wav2vec2-large-xlsr-53-persian"
-    
+        model_name = env_str("WAV2VEC2_MODEL_NAME", DEFAULT_MODEL_NAME)
+
     logger.info(f"Loading model: {model_name}")
     # Get Hugging Face token from environment variable (optional)
-    hf_token = os.getenv('HUGGINGFACE_TOKEN')
+    hf_token = get_hf_token()
     processor = Wav2Vec2Processor.from_pretrained(
         model_name,
-        token=hf_token if hf_token else None
+        token=hf_token
     )
     model = Wav2Vec2ForCTC.from_pretrained(
         model_name,
-        token=hf_token if hf_token else None,
+        token=hf_token,
         use_safetensors=True
     )
     
@@ -260,13 +258,14 @@ def main():
         '--model',
         type=str,
         default=None,
-        help='Hugging Face model name (default: Persian Wav2Vec2)'
+        help='Hugging Face model name (default: WAV2VEC2_MODEL_NAME env variable, '
+             'then the public Persian Wav2Vec2 checkpoint)'
     )
     parser.add_argument(
         '--chunk-duration',
         type=int,
-        default=30,
-        help='Chunk duration in seconds (default: 30)'
+        default=env_int('WAV2VEC2_CHUNK_DURATION', 30),
+        help='Chunk duration in seconds (default: WAV2VEC2_CHUNK_DURATION env variable, else 30)'
     )
     parser.add_argument(
         '--output',
